@@ -1,7 +1,6 @@
-/*
 # NullEngine
 
-This is my 3D engine based on the sample code from the Bridge SDK, specifically [this project](https://github.com/Looking-Glass/BridgeSDKSample/tree/csharp_samples/BridgeSDKSample).
+This is my 3D engine based on the sample code from the Bridge SDK, specifically [this project](https://github.com/Looking-Glass/bridge-sdk-samples/tree/csharp_samples/BridgeSDKSample).
 
 ---
 
@@ -210,4 +209,3 @@ This system is similar to Unity’s GameObject-Component model, where each object 
 ### Contributing
 
 If you find any issues or have suggestions for improvements, feel free to open an issue or submit a pull request. Contributions are welcome!
-*/

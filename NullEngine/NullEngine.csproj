@@ -139,6 +139,7 @@
 
   <ItemGroup>
     <Folder Include="Assets\Scenes\" />
+    <Folder Include="Tutorials\" />
   </ItemGroup>
 
 </Project>

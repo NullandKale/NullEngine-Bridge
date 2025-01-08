@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 16
 VisualStudioVersion = 16.0.33529.622
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NullEngine", "NullEngine.csproj", "{5C303F45-FBE5-474E-B666-140313098464}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NullEngine", "NullEngine\NullEngine.csproj", "{5C303F45-FBE5-474E-B666-140313098464}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
