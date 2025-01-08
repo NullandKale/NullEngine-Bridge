@@ -1,0 +1,80 @@
+{
+  "TestScene0": {
+    "CameraSize": 2.0,
+    "Focus": 1.0,
+    "Offset": 1.0,
+    "Transform": {
+      "Position": [ 0.0, 0.0, 0.0 ],
+      "Rotation": [ 0.0, 0.0, 0.0 ],
+      "Scale": [ 1.0, 1.0, 1.0 ]
+    },
+    "Meshes": [
+      {
+        "MeshName": "cube0",
+        "MeshParameters": {
+          "Type": "Cube",
+          "Size": 1.0
+        },
+        "Transform": {
+          "Position": [ 0.0, 0.0, 0.0 ],
+          "Rotation": [ 0.0, 45.0, 45.0 ],
+          "Scale": [ 1.0, 1.0, 1.0 ]
+        },
+        "Components": [
+          {
+            "Type": "SceneChangeComponent",
+            "Properties": {
+              "Scenes": [ "TestScene1", "", "", "", "", "", "", "", "", "" ]
+            }
+          },
+          {
+            "Type": "SceneMoveComponent",
+            "Properties": {
+              "MovementSpeed": 5.0,
+              "RotationSensitivity": 0.1
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "TestScene1": {
+    "CameraSize": 2.0,
+    "Focus": 1.0,
+    "Offset": 1.0,
+    "Transform": {
+      "Position": [ 0.0, 0.0, 0.0 ],
+      "Rotation": [ 0.0, 0.0, 0.0 ],
+      "Scale": [ 0.5, 0.5, 0.5 ]
+    },
+    "Meshes": [
+      {
+        "MeshName": "cube1",
+        "MeshParameters": {
+          "Type": "Cube",
+          "Size": 1.0
+        },
+        "Transform": {
+          "Position": [ 0.0, 0.0, 0.0 ],
+          "Rotation": [ 0.0, 90.0, 0.0 ],
+          "Scale": [ 1.0, 1.0, 1.0 ]
+        },
+        "Components": [
+          {
+            "Type": "SceneChangeComponent",
+            "Properties": {
+              "Scenes": [ "TestScene0", "", "", "", "", "", "", "", "", "" ]
+            }
+          },
+          {
+            "Type": "SceneMoveComponent",
+            "Properties": {
+              "MovementSpeed": 5.0,
+              "RotationSensitivity": 0.1
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

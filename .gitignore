@@ -1,0 +1,11 @@
+bin/ 
+obj/ 
+/.vs
+/Backup
+/Backup1
+/Properties
+
+# Ignore all .mp4, .png, and .jpeg files
+**/*.mp4
+**/*.png
+**/*.jpeg
