@@ -11,6 +11,8 @@ namespace NullEngine
     {
         static void Main(string[] args)
         {
+            Log.Initialize("logs/");
+
             using (var window = new MainWindow())
             {
                 window.Run();

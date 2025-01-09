@@ -42,7 +42,6 @@ namespace NullEngine
                 Title = "Null Engine",
             })
         {
-            Log.Initialize("logs/");
         }
 
 

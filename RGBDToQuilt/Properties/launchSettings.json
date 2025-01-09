@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "RGBDToQuilt": {
+      "commandName": "Project",
+      "commandLineArgs": "--input \"C:\\Users\\alec\\source\\repos\\NullandKale\\NullEngine\\RGBDToQuilt\\Assets\\ComfyUI_temp_npicj_00001_.png\""
+    }
+  }
+}
