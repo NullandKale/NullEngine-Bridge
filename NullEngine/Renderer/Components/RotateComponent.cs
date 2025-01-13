@@ -46,7 +46,7 @@ namespace NullEngine.Renderer.Components
             if (isPressed)
             {
                 // Adjust rotation based on mouse movement and sensitivity
-                rotation.Y += delta.X * sensitivity; // Rotate around Y-axis (horizontal movement)
+                rotation.Y -= delta.X * sensitivity; // Rotate around Y-axis (horizontal movement)
                 rotation.X -= delta.Y * sensitivity; // Rotate around X-axis (vertical movement)
             }
         }

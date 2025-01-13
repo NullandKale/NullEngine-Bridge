@@ -40,8 +40,8 @@ namespace NullEngine.Renderer.Shaders
 
             void main()
             {
-                FragColor = vec4(abs(fragNormal), 1.0);
-                //FragColor = texture(textureSampler, fragTexCoords);
+                //FragColor = vec4(abs(fragNormal), 1.0);
+                FragColor = texture(textureSampler, fragTexCoords);
             }
             "
             );

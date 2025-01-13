@@ -15,7 +15,7 @@ namespace NullEngine.Renderer.Scenes
 
     public static class ComponentFactory
     {
-        private const string ComponentNamespace = "NullEngine.Renderer.Components";
+        private static readonly Type IComponentType = typeof(IComponent);
 
         private static object ConvertProperty(object value, Type targetType)
         {
@@ -82,11 +82,10 @@ namespace NullEngine.Renderer.Scenes
         {
             Log.Debug($"Creating component of type '{typeName}'.");
 
-            // 1) Resolve the component type. If the user provided a fully qualified name,
-            //    use it as-is. Otherwise, try the default namespace, then fallback to scanning all assemblies.
+            // 1) Resolve the component type. Search across all assemblies for types implementing IComponent.
             Type componentType = ResolveComponentType(typeName);
 
-            if (componentType == null || !typeof(IComponent).IsAssignableFrom(componentType))
+            if (componentType == null || !IComponentType.IsAssignableFrom(componentType))
             {
                 Log.Warn($"Component type '{typeName}' not recognized or does not implement IComponent.");
                 return null;
@@ -161,33 +160,23 @@ namespace NullEngine.Renderer.Scenes
         }
 
         /// <summary>
-        /// Attempts to resolve the component type by checking if the user provided
-        /// a fully qualified name first, otherwise tries the default namespace,
-        /// and finally scans all loaded assemblies if needed.
+        /// Attempts to resolve the component type by searching across all loaded assemblies
+        /// for types that implement IComponent and match the provided type name.
         /// </summary>
         private static Type ResolveComponentType(string typeName)
         {
-            // If the user already provided a fully qualified name (with at least one '.'),
-            // try loading that directly
-            if (typeName.Contains('.'))
-            {
-                Type t = Type.GetType(typeName, throwOnError: false, ignoreCase: true);
-                if (t != null) return t;
-            }
-
-            // Otherwise, try using the default namespace
-            string fullTypeName = $"{ComponentNamespace}.{typeName}";
-            Type componentType = Type.GetType(fullTypeName, throwOnError: false, ignoreCase: true);
-            if (componentType != null) return componentType;
-
-            // Fallback: search in all currently loaded assemblies if not found yet
-            // (useful if the user typed a partial or different namespace)
-            componentType = AppDomain.CurrentDomain
+            // Search all loaded assemblies for types implementing IComponent
+            var componentTypes = AppDomain.CurrentDomain
                 .GetAssemblies()
                 .SelectMany(a => a.GetTypes())
+                .Where(t => IComponentType.IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract)
+                .ToList();
+
+            // Try to find a type that matches the provided name (case-insensitive)
+            Type componentType = componentTypes
                 .FirstOrDefault(t => t.FullName != null &&
-                    t.FullName.Equals(typeName, StringComparison.OrdinalIgnoreCase) ||
-                    t.Name.Equals(typeName, StringComparison.OrdinalIgnoreCase));
+                    (t.FullName.Equals(typeName, StringComparison.OrdinalIgnoreCase) ||
+                     t.Name.Equals(typeName, StringComparison.OrdinalIgnoreCase)));
 
             return componentType;
         }

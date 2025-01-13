@@ -1,0 +1,44 @@
+{
+  "RGBDScene0": {
+    "CameraSize": 2.0,
+    "Focus": 1.0,
+    "Offset": 1.0,
+    "Transform": {
+      "Position": [ 0.0, 0.0, 0.0 ],
+      "Rotation": [ 0.0, 0.0, 0.0 ],
+      "Scale": [ 1.0, 1.0, 1.0 ]
+    },
+    "Meshes": [
+      {
+        "MeshName": "plane0",
+        "MeshParameters": {
+          "Type": "Plane",
+          "Width": 4.0,
+          "Depth": 2.0,
+          "GridX": 1000,
+          "GridZ": 1000
+
+        },
+        "Transform": {
+          "Position": [ 0.0, 0.0, 0.0 ],
+          "Rotation": [ 90.0, 0.0, 0.0 ],
+          "Scale": [ 1.0, 1.0, 1.0 ]
+        },
+        "Components": [
+          {
+            "Type": "RGBDComponent",
+            "Properties": {
+              "Filename": "Assets/rgbdTest.png"
+            }
+          },
+          {
+            "Type": "RotateComponent",
+            "Properties": {
+              "sensitivity": 0.1
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -68,6 +68,12 @@ namespace NullEngine
             // Compute the view matrix with the adjusted position and up vector
             viewMatrix = ComputeViewMatrix(Size, Center, adjustedUp, offset);
 
+            if (!invert)
+            {
+                Matrix4 flipX = Matrix4.CreateScale(-1.0f, 1.0f, 1.0f);
+                viewMatrix = flipX * viewMatrix;
+            }
+
             // Compute the standard projection matrix
             projectionMatrix = ComputeProjectionMatrix();
 
