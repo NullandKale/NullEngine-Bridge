@@ -9,6 +9,7 @@ using System.Linq;
 using NullEngine.Renderer.Mesh;
 using NullEngine.Renderer.Textures;
 using BridgeSDK;
+using System.Text.RegularExpressions;
 
 namespace NullEngine.Renderer.Scenes
 {
@@ -56,6 +57,18 @@ namespace NullEngine.Renderer.Scenes
         }
 
         /// <summary>
+        /// Removes comments from a JSON string.
+        /// </summary>
+        /// <param name="json">The JSON string with comments.</param>
+        /// <returns>The JSON string without comments.</returns>
+        private static string RemoveJsonComments(string json)
+        {
+            // Regex pattern to match both single-line and multi-line comments
+            string pattern = @"(//.*?$|/\*.*?\*/)";
+            return Regex.Replace(json, pattern, string.Empty, RegexOptions.Singleline | RegexOptions.Multiline);
+        }
+
+        /// <summary>
         /// Loads scenes from a JSON file and validates their mesh names.
         /// </summary>
         public static void LoadScenesFromJson(string filePath, BridgeWindowData bridgeData)
@@ -73,6 +86,10 @@ namespace NullEngine.Renderer.Scenes
             {
                 json = File.ReadAllText(filePath);
                 Log.Debug($"Successfully read file '{filePath}'.");
+
+                // Remove comments from the JSON
+                json = RemoveJsonComments(json);
+                Log.Debug("Comments removed from JSON.");
             }
             catch (Exception ex)
             {
@@ -83,7 +100,7 @@ namespace NullEngine.Renderer.Scenes
             Dictionary<string, SceneData> scenesData;
             try
             {
-                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true, AllowTrailingCommas = true };
                 scenesData = JsonSerializer.Deserialize<Dictionary<string, SceneData>>(json, options);
                 Log.Debug($"Successfully deserialized JSON into {scenesData.Count} scenes.");
             }
