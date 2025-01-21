@@ -1,16 +1,30 @@
+// This is the RGBDScene.json file, below is a single scene named "RGBDScene0"
 {
   "RGBDScene0": {
+    // Each scene has properties like CameraSize, Focus, and Offset, which the system uses
+    // to set up a light field / quilt rendering environment.
+
+    // CameraSize dictates the volume of the camera in 3D
     "CameraSize": 2.0,
+    // Focus is the focus setting for the rendered Quilt
     "Focus": 1.0,
+    // Offset is the depthiness for the rendered Quilt
     "Offset": 1.0,
+
+    // Transform is the camera's transform in the 3D world, this is currently disabled but I should have a fix soon
     "Transform": {
       "Position": [ 0.0, 0.0, 0.0 ],
       "Rotation": [ 0.0, 0.0, 0.0 ],
       "Scale": [ 1.0, 1.0, 1.0 ]
     },
+    // "Meshes" is an array of mesh definitions that will appear in this scene.
     "Meshes": [
       {
+        // Unique mesh name across the entire JSON, used to identify and preload it
         "MeshName": "plane0",
+
+        // MeshParameters define how the mesh is generated (right now, only generated meshes are supported).
+        // Here, Type is "Plane" with given width/depth and a fine subdivision grid (1000 x 1000).
         "MeshParameters": {
           "Type": "Plane",
           "Width": 4.0,
@@ -19,18 +33,29 @@
           "GridZ": 1000
 
         },
+        // This is the transform for the mesh itself.
+        // We rotate 90 degrees across the x-axis to make it “upright.”
         "Transform": {
           "Position": [ 0.0, 0.0, 0.0 ],
           "Rotation": [ 90.0, 0.0, 0.0 ],
           "Scale": [ 1.0, 1.0, 1.0 ]
         },
+        // A list of components that implement the IComponent interface in NullEngine.
+        // Each component modifies the mesh in some way.
         "Components": [
           {
+            // "Type" references a class name for a specific component—in this case, RGBDComponent
+            // from RGBDRenderer.Components.RGBDComponent.cs
+            // This will attach our custom RGBD shader logic to the plane
             "Type": "RGBDComponent",
+            // "Properties" are mapped to public (or private/protected) fields in that component
             "Properties": {
-              "Filename": "Assets/rgbdTest.png"
+              // This is the RGBD texture that gets loaded, to read more about it checkout the RGBDRenderer.Components.RGBDComponent.cs file
+              "Filename": "Assets/rgbdTest.jpg"
             }
           },
+          // This is a built-in NullEngine component that allows user to rotate the mesh
+          // via mouse drag, with a certain sensitivity
           {
             "Type": "RotateComponent",
             "Properties": {
@@ -38,7 +63,7 @@
             }
           }
         ]
-      }
+      },
     ]
   }
 }

@@ -12,11 +12,18 @@ using System.Threading.Tasks;
 
 namespace RGBDRenderer.Components
 {
+    // RGBDComponent implements NullEngine.Renderer.Components.IComponent
+    // and is responsible for using a specially crafted shader to displace mesh vertices
+    // based on the depth data encoded into the texture (the "right half" of the image).
     public class RGBDComponent : IComponent
     {
+        // This Filename is filled from the JSON file’s "Properties" section
         public string Filename;
+
+        // To store the loaded texture.
         public Texture texture = null;
 
+        // The custom shader that does the depth-based displacement
         public Shader RGBDShader;
 
         public RGBDComponent() 
@@ -24,16 +31,21 @@ namespace RGBDRenderer.Components
             Filename = "";
             texture = null;
 
+            // A basic vertex shader that:
+            // 1) Extracts depth from the right side (x from 0.5 to 1.0) of the provided texture
+            // 2) Inverts that depth
+            // 3) Offsets the mesh vertices by that depth times the local normal
+            // The fragment shader then samples color from the left side (x from 0.0 to 0.5).
             RGBDShader = new Shader(
                 """
                 #version 330 core
 
-                // this is our mesh layout, we have a position, normal and uv for each vertex
+                // this is the standard mesh layout, we have a position, normal and uv for each vertex
                 layout (location = 0) in vec3 position;
                 layout (location = 1) in vec3 normal;
                 layout (location = 2) in vec2 texCoords;
 
-                // the vert shader returns the texture coords
+                // this vert shader returns just the texture coords
                 out vec2 fragTexCoords;
 
                 // these are all from the camera system, the model belongs to the mesh, and the view and projection are a combo of the 
@@ -42,24 +54,26 @@ namespace RGBDRenderer.Components
                 uniform mat4 view;
                 uniform mat4 projection;
 
-                // this is the texture, its an RGB+Depth image, so the left side of the texture is the color, and the right side is the depth white is close and black is far
+                // this is the texture, its an RGB+Depth image. The left side of the texture is the color, and the right side is the depth white is close and black is far
                 uniform sampler2D textureSampler;
 
                 void main()
                 {
-                    // 1) Grab the depth from the right half of the texture and invert
+                    // Sample the right half of the texture for depth
+                    // 'textureSampler' has the entire image, so we shift texCoords.x by +0.5 
+                    // to read from the right half. Then invert it (1.0 - that value).
                     float depthVal = 1.0 - texture(textureSampler, vec2(texCoords.x * 0.5 + 0.5, texCoords.y)).r;
 
-                    // 2) Remap depth from [0..1] to [-0.5..0.5]
+                    // Shift from [0..1] to [-0.5..0.5]
                     depthVal -= 0.5;
 
-                    // 3) Displace the vertex in local space along its local normal
+                    // Offset the vertex in local space along its local normal
                     vec3 displacedPos = position + normal * depthVal;
 
-                    // 4) Transform by model/view/projection
+                    // Standard model/view/projection transform to get to screen space
                     gl_Position = projection * view * model * vec4(displacedPos, 1.0);
 
-                    // Sample the color from the left half of the texture
+                    // For the color, we use the left half (so texCoords.x * 0.5)
                     fragTexCoords = vec2(texCoords.x * 0.5, texCoords.y);
                 }
                 """,
@@ -68,17 +82,18 @@ namespace RGBDRenderer.Components
 
                 in vec2 fragTexCoords;
                 out vec4 FragColor;
-
                 uniform sampler2D textureSampler;
 
                 void main()
                 {
-                    // use the fragTexCoords which we already transformed to the left half of the texture
+                    // Simply sample the left half for the color portion
                     FragColor = texture(textureSampler, fragTexCoords);
                 }
                 """);
         }
 
+        // Because of how the JSON scene system works, we need to be able to "clone"
+        // our component so it can be reused without reinitializing everything from scratch
         public object Clone()
         {
             RGBDComponent clone = new RGBDComponent();
@@ -86,16 +101,21 @@ namespace RGBDRenderer.Components
             return clone;
         }
 
+        // Keyboard input callback (once per frame). 
+        // We can read the keyboard state and / or manipulate the mesh if needed.
         public void HandleKeyboardInput(BaseMesh mesh, KeyboardState keyboardState, float deltaTime)
         {
 
         }
 
+        // Mouse input callback (once per frame). 
+        // We can read mouse states and / or manipulate the mesh if needed.
         public void HandleMouseInput(BaseMesh mesh, MouseState mouseState, Vector2 delta, bool isPressed)
         {
 
         }
 
+        // LoadTexture is a helper to load the texture from disk, if it hasn't been loaded yet
         public void LoadTexture()
         {
             if (File.Exists(Filename) && texture == null)
@@ -105,9 +125,13 @@ namespace RGBDRenderer.Components
             }
         }
 
+        // Called once per frame to update the component
         public void Update(BaseMesh mesh, float deltaTime)
         {
+            // Load the texture once if not loaded yet
             LoadTexture();
+
+            // Attach our shader and texture to the mesh, so the render pipeline uses them
             mesh.Texture = texture;
             mesh.shader = RGBDShader;
         }
