@@ -28,10 +28,9 @@
             }
           },
           {
-            "Type": "SceneMoveComponent",
+            "Type": "RotateComponent",
             "Properties": {
-              "MovementSpeed": 5.0,
-              "RotationSensitivity": 0.1
+              "sensitivity": 0.1
             }
           }
         ]
@@ -67,10 +66,9 @@
             }
           },
           {
-            "Type": "SceneMoveComponent",
+            "Type": "RotateComponent",
             "Properties": {
-              "MovementSpeed": 5.0,
-              "RotationSensitivity": 0.1
+              "sensitivity": 0.1
             }
           }
         ]

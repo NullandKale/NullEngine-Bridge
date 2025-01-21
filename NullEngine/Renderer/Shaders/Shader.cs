@@ -72,6 +72,18 @@ namespace NullEngine.Renderer.Shaders
             };
         }
 
+        public void SetUniform(string name, Vector2 value)
+        {
+            uniformCache[name] = () =>
+            {
+                int location = GetUniformLocation(name);
+                if (location != -1)
+                {
+                    GL.Uniform2(location, value);
+                }
+            };
+        }
+
         public void SetUniform(string name, Vector3 value)
         {
             uniformCache[name] = () =>
@@ -107,6 +119,21 @@ namespace NullEngine.Renderer.Shaders
                 }
             };
         }
+
+        public void SetUniformArray(string name, float[] values)
+        {
+            uniformCache[name] = () =>
+            {
+                int location = GetUniformLocation(name);
+                if (location != -1)
+                {
+                    // Upload a float array to the uniform
+                    GL.Uniform1(location, values.Length, values);
+                }
+            };
+        }
+
+
 
         // Apply all cached uniforms
         private void ApplyUniforms()
