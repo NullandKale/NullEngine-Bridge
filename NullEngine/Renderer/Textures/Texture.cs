@@ -1,6 +1,5 @@
 ﻿using System;
-using System.Drawing;
-using System.Drawing.Imaging;
+using OpenCvSharp;
 using OpenTK.Graphics.OpenGL;
 
 namespace NullEngine.Renderer.Textures
@@ -16,26 +15,41 @@ namespace NullEngine.Renderer.Textures
             textureId = GL.GenTexture();
             GL.BindTexture(TextureTarget.Texture2D, textureId);
 
-            // Load the image
-            using (Bitmap bitmap = new Bitmap(filePath))
+            // Load the image using OpenCV
+            using (Mat mat = new Mat(filePath, ImreadModes.Unchanged))
             {
-                BitmapData data = bitmap.LockBits(
-                    new Rectangle(0, 0, bitmap.Width, bitmap.Height),
-                    ImageLockMode.ReadOnly,
-                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                if (mat.Empty())
+                    throw new ArgumentException($"Could not load texture file: {filePath}");
+
+                int channels = mat.Channels();
+                if (channels == 1)
+                {
+                    Cv2.CvtColor(mat, mat, ColorConversionCodes.GRAY2RGBA);
+                }
+                else if (channels == 3)
+                {
+                    Cv2.CvtColor(mat, mat, ColorConversionCodes.BGR2RGBA);
+                }
+                else if (channels == 4)
+                {
+                    Cv2.CvtColor(mat, mat, ColorConversionCodes.BGRA2RGBA);
+                }
+                else
+                {
+                    throw new NotSupportedException($"Unsupported number of channels: {channels}");
+                }
+
 
                 GL.TexImage2D(
                     TextureTarget.Texture2D,
                     0,
                     PixelInternalFormat.Rgba,
-                    data.Width,
-                    data.Height,
+                    mat.Width,
+                    mat.Height,
                     0,
-                    OpenTK.Graphics.OpenGL.PixelFormat.Bgra,
+                    OpenTK.Graphics.OpenGL.PixelFormat.Rgba,
                     PixelType.UnsignedByte,
-                    data.Scan0);
-
-                bitmap.UnlockBits(data);
+                    mat.Data);
             }
 
             // Set default texture parameters
@@ -52,13 +66,11 @@ namespace NullEngine.Renderer.Textures
             GL.BindTexture(TextureTarget.Texture2D, 0);
         }
 
-
         public Texture(string name, int textureId)
         {
             Name = name;
             this.textureId = textureId;
         }
-
 
         public void Bind(TextureUnit unit = TextureUnit.Texture0)
         {

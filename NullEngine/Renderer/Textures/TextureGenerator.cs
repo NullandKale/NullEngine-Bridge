@@ -1,8 +1,8 @@
 ﻿using System;
-using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
+using OpenCvSharp;
 using OpenTK.Graphics.OpenGL;
+using NullEngine.Renderer.Textures;
+using System.Drawing;
 
 namespace NullEngine.Renderer.Textures
 {
@@ -13,31 +13,43 @@ namespace NullEngine.Renderer.Textures
         /// </summary>
         public static Texture GenerateSolidColor(string name, Color color, int width = 256, int height = 256)
         {
-            Bitmap bitmap = new Bitmap(width, height);
-            using (Graphics g = Graphics.FromImage(bitmap))
-            {
-                g.Clear(color);
-            }
+            // Create Mat with BGRA color (OpenCV default format)
+            using Mat mat = new Mat(height, width, MatType.CV_8UC4, new Scalar(
+                color.B,
+                color.G,
+                color.R,
+                color.A
+            ));
 
-            return CreateTextureFromBitmap(name, bitmap);
+            return CreateTextureFromMat(name, mat);
         }
 
         /// <summary>
-        /// Generates a gradient texture.
+        /// Generates a vertical gradient texture.
         /// </summary>
         public static Texture GenerateGradient(string name, Color startColor, Color endColor, int width = 256, int height = 256)
         {
-            Bitmap bitmap = new Bitmap(width, height);
-            using (Graphics g = Graphics.FromImage(bitmap))
+            Mat mat = new Mat(height, width, MatType.CV_8UC4);
+
+            // Convert colors to BGRA (OpenCV format)
+            Vec4b bgraStart = new Vec4b(startColor.B, startColor.G, startColor.R, startColor.A);
+            Vec4b bgraEnd = new Vec4b(endColor.B, endColor.G, endColor.R, endColor.A);
+
+            // Create vertical gradient
+            for (int y = 0; y < height; y++)
             {
-                using (LinearGradientBrush brush = new LinearGradientBrush(
-                    new Rectangle(0, 0, width, height), startColor, endColor, LinearGradientMode.Vertical))
-                {
-                    g.FillRectangle(brush, 0, 0, width, height);
-                }
+                float t = y / (float)(height - 1);
+                Vec4b color = new Vec4b(
+                    (byte)(bgraStart[0] + (bgraEnd[0] - bgraStart[0]) * t),
+                    (byte)(bgraStart[1] + (bgraEnd[1] - bgraStart[1]) * t),
+                    (byte)(bgraStart[2] + (bgraEnd[2] - bgraStart[2]) * t),
+                    (byte)(bgraStart[3] + (bgraEnd[3] - bgraStart[3]) * t)
+                );
+
+                mat.Row(y).SetTo(color);
             }
 
-            return CreateTextureFromBitmap(name, bitmap);
+            return CreateTextureFromMat(name, mat);
         }
 
         /// <summary>
@@ -45,22 +57,26 @@ namespace NullEngine.Renderer.Textures
         /// </summary>
         public static Texture GenerateCheckerboard(string name, Color color1, Color color2, int tileSize = 32, int width = 256, int height = 256)
         {
-            Bitmap bitmap = new Bitmap(width, height);
+            Mat mat = new Mat(height, width, MatType.CV_8UC4);
+
+            // Convert colors to BGRA (OpenCV format)
+            Vec4b bgraColor1 = new Vec4b(color1.B, color1.G, color1.R, color1.A);
+            Vec4b bgraColor2 = new Vec4b(color2.B, color2.G, color2.R, color2.A);
+
+            // Draw checkerboard pattern
             for (int y = 0; y < height; y += tileSize)
             {
                 for (int x = 0; x < width; x += tileSize)
                 {
-                    bool isColor1 = (x / tileSize + y / tileSize) % 2 == 0;
-                    using (Graphics g = Graphics.FromImage(bitmap))
-                    {
-                        g.FillRectangle(
-                            new SolidBrush(isColor1 ? color1 : color2),
-                            x, y, tileSize, tileSize);
-                    }
+                    bool isColor1 = ((x / tileSize) + (y / tileSize)) % 2 == 0;
+                    var color = isColor1 ? bgraColor1 : bgraColor2;
+
+                    Rect roi = new Rect(x, y, Math.Min(tileSize, width - x), Math.Min(tileSize, height - y));
+                    mat[roi].SetTo(color);
                 }
             }
 
-            return CreateTextureFromBitmap(name, bitmap);
+            return CreateTextureFromMat(name, mat);
         }
 
         /// <summary>
@@ -96,30 +112,33 @@ namespace NullEngine.Renderer.Textures
         }
 
         /// <summary>
-        /// Creates an OpenGL texture from a bitmap.
+        /// Creates an OpenGL texture from an OpenCV Mat.
         /// </summary>
-        private static Texture CreateTextureFromBitmap(string name, Bitmap bitmap)
+        private static Texture CreateTextureFromMat(string name, Mat mat)
         {
+            // Convert to RGBA format expected by OpenGL
+            Cv2.CvtColor(mat, mat, ColorConversionCodes.BGRA2RGBA);
+
+            // Flip vertically to match OpenGL's texture coordinate system
+            Cv2.Flip(mat, mat, FlipMode.Y);
+
             int textureId = GL.GenTexture();
             GL.BindTexture(TextureTarget.Texture2D, textureId);
 
-            // Upload bitmap to GPU
-            BitmapData data = bitmap.LockBits(
-                new Rectangle(0, 0, bitmap.Width, bitmap.Height),
-                ImageLockMode.ReadOnly,
-                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-
+            // Upload texture data
             GL.TexImage2D(
-                TextureTarget.Texture2D, 0,
-                PixelInternalFormat.Rgba,
-                data.Width, data.Height,
+                TextureTarget.Texture2D,
                 0,
-                OpenTK.Graphics.OpenGL.PixelFormat.Bgra,
-                PixelType.UnsignedByte, data.Scan0);
+                PixelInternalFormat.Rgba,
+                mat.Width,
+                mat.Height,
+                0,
+                OpenTK.Graphics.OpenGL.PixelFormat.Rgba,
+                PixelType.UnsignedByte,
+                mat.Data
+            );
 
-            bitmap.UnlockBits(data);
-
-            // Set texture parameters
+            // Set default parameters
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
@@ -127,7 +146,6 @@ namespace NullEngine.Renderer.Textures
 
             GL.BindTexture(TextureTarget.Texture2D, 0);
 
-            // Create Texture instance
             return new Texture(name, textureId);
         }
     }
