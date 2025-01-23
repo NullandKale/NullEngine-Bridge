@@ -8,6 +8,8 @@ namespace NullEngine.Renderer.Textures
     {
         public string Name;
         protected int textureId;
+        public int width;
+        public int height;
 
         public Texture(string name, string filePath, bool generateMipmaps = true)
         {
@@ -47,9 +49,12 @@ namespace NullEngine.Renderer.Textures
                     mat.Width,
                     mat.Height,
                     0,
-                    OpenTK.Graphics.OpenGL.PixelFormat.Rgba,
+                    PixelFormat.Rgba,
                     PixelType.UnsignedByte,
                     mat.Data);
+
+                this.width = mat.Width;
+                this.height = mat.Height;
             }
 
             // Set default texture parameters

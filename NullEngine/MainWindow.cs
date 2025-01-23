@@ -132,6 +132,11 @@ namespace NullEngine
             base.OnLoad();
         }
 
+        private void MainWindow_FileDrop(FileDropEventArgs obj)
+        {
+            
+        }
+
         protected override void OnUpdateFrame(FrameEventArgs args)
         {
             Scene activeScene = SceneManager.GetActiveScene();

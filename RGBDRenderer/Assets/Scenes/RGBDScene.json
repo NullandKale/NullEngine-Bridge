@@ -27,7 +27,7 @@
         // Here, Type is "Plane" with given width/depth and a fine subdivision grid (1000 x 1000).
         "MeshParameters": {
           "Type": "Plane",
-          "Width": 4.0,
+          "Width": 2.0,
           "Depth": 2.0,
           "GridX": 1000,
           "GridZ": 1000

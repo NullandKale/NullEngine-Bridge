@@ -5,19 +5,19 @@ namespace RGBDRenderer
     // Entry point of our RGBDRenderer project
     internal class Program
     {
+        public static MainWindow window;
         static void Main(string[] args)
         {
             // First we initialize the Log singleton (from NullEngine)
             // This sets up logging functionality and the directory where log files will be stored
             Log.Initialize("logs/");
 
-            // We then create a new instance of the RGBDWindow (defined below) inside a using block,
-            // which ensures proper cleanup of resources once the window is closed.
-            using (var window = new RGBDWindow())
-            {
-                // This starts the run loop of RGBDWindow and blocks until the window is closed.
-                window.Run();
-            }
+            // We then create a new instance of the RGBDWindow (defined below)
+            // Which is our window that opens on the 2D screen
+            // The Bridge SDK will handle the 3D window
+            window = new RGBDWindow();
+            // This starts the run loop of RGBDWindow and blocks until the window is closed.
+            window.Run();
         }
     }
 

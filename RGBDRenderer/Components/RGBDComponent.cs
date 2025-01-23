@@ -26,10 +26,15 @@ namespace RGBDRenderer.Components
         // The custom shader that does the depth-based displacement
         public Shader RGBDShader;
 
+        // Track pending drag-and-drop files
+        private string pendingFilename;
+
         public RGBDComponent() 
         {
             Filename = "";
             texture = null;
+
+            Program.window.FileDrop += FileDrop;
 
             // A basic vertex shader that:
             // 1) Extracts depth from the right side (x from 0.5 to 1.0) of the provided texture
@@ -92,6 +97,16 @@ namespace RGBDRenderer.Components
                 """);
         }
 
+        private void FileDrop(OpenTK.Windowing.Common.FileDropEventArgs obj)
+        {
+
+            if (obj.FileNames.Length > 0 && File.Exists(obj.FileNames[0]))
+            {
+                    // Store the first valid file for processing in the next update
+                    pendingFilename = obj.FileNames[0];
+            }
+        }
+
         // Because of how the JSON scene system works, we need to be able to "clone"
         // our component so it can be reused without reinitializing everything from scratch
         public object Clone()
@@ -116,12 +131,35 @@ namespace RGBDRenderer.Components
         }
 
         // LoadTexture is a helper to load the texture from disk, if it hasn't been loaded yet
-        public void LoadTexture()
+        public void LoadTexture(BaseMesh mesh)
         {
+            // Process pending drag-and-drop file
+            if (!string.IsNullOrEmpty(pendingFilename))
+            {
+                Filename = pendingFilename; // Update filename
+                pendingFilename = null;     // Clear pending state
+                texture = null;             // Force texture reload
+            }
+
             if (File.Exists(Filename) && texture == null)
             {
                 TextureManager.LoadTexture("RGBD", Filename);
                 texture = TextureManager.GetTexture("RGBD");
+
+                if (texture != null && texture.width > 0 && texture.height > 0)
+                {
+                    // Calculate aspect ratio of the COLOR portion (left half of image)
+                    float aspectRatio = (texture.width / 2f) / texture.height;
+
+                    // Scale mesh to match texture aspect ratio (assuming original mesh is 1x1 unit)
+                    // We preserve the Y scale at 1 and adjust X scale to match aspect ratio
+                    mesh.Transform.Scale = new Vector3(aspectRatio, 1, 1);
+                }
+                else
+                {
+                    // Fallback to default scale if texture loading failed
+                    mesh.Transform.Scale = Vector3.One;
+                }
             }
         }
 
@@ -129,7 +167,7 @@ namespace RGBDRenderer.Components
         public void Update(BaseMesh mesh, float deltaTime)
         {
             // Load the texture once if not loaded yet
-            LoadTexture();
+            LoadTexture(mesh);
 
             // Attach our shader and texture to the mesh, so the render pipeline uses them
             mesh.Texture = texture;
