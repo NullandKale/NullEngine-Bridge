@@ -143,7 +143,7 @@ namespace RGBDRenderer.Components
 
             if (File.Exists(Filename) && texture == null)
             {
-                TextureManager.LoadTexture("RGBD", Filename);
+                TextureManager.LoadTexture("RGBD", Filename, false);
                 texture = TextureManager.GetTexture("RGBD");
 
                 if (texture != null && texture.width > 0 && texture.height > 0)
