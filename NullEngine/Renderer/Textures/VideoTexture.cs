@@ -6,19 +6,15 @@ namespace NullEngine.Renderer.Textures
 {
     public class VideoTexture : Texture
     {
-        private VideoReader videoReader;
+        private AsyncVideoReader videoReader;
         private double timeSinceLastFrame;
         private double frameInterval;
 
         public VideoTexture(string name, string videoFilePath, bool generateMipmaps = true)
             : base(name, GL.GenTexture())
         {
-            videoReader = new VideoReader(videoFilePath);
+            videoReader = new AsyncVideoReader(videoFilePath);
             frameInterval = 1.0 / videoReader.Fps;
-
-            // Initialize the texture with the first frame
-            videoReader.ReadFrame();
-            UpdateTextureFromVideoFrame();
 
             // Set default texture parameters
             GL.BindTexture(TextureTarget.Texture2D, textureId);
@@ -39,23 +35,10 @@ namespace NullEngine.Renderer.Textures
         {
             timeSinceLastFrame += deltaTime;
 
-            // If enough time has passed, update the texture with the next frame
             if (timeSinceLastFrame >= frameInterval)
             {
-                int framesToSkip = (int)(timeSinceLastFrame / frameInterval);
-                for (int i = 0; i < framesToSkip; i++)
-                {
-                    if (!videoReader.ReadFrame())
-                    {
-                        // If we reach the end of the video, loop back to the start
-                        videoReader.Dispose();
-                        videoReader = new VideoReader(videoReader.videoFile);
-                        videoReader.ReadFrame();
-                    }
-                }
-
                 UpdateTextureFromVideoFrame();
-                timeSinceLastFrame -= framesToSkip * frameInterval;
+                timeSinceLastFrame -= frameInterval;
             }
         }
 
@@ -65,13 +48,13 @@ namespace NullEngine.Renderer.Textures
             GL.TexImage2D(
                 TextureTarget.Texture2D,
                 0,
-                PixelInternalFormat.Rgba,
+                PixelInternalFormat.Rgb,       // Use RGB internal format
                 videoReader.Width,
                 videoReader.Height,
                 0,
-                OpenTK.Graphics.OpenGL.PixelFormat.Rgba,
+                PixelFormat.Bgr, // Use BGR pixel format
                 PixelType.UnsignedByte,
-                videoReader.pinnedPtr
+                videoReader.GetCurrentFramePtr()      // Use the raw BGR data from the Mat
             );
             GL.BindTexture(TextureTarget.Texture2D, 0);
         }
