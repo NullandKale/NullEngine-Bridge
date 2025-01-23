@@ -195,6 +195,10 @@ namespace NullEngine
 
             // Update the scene
             activeScene?.Update((float)args.Time);
+
+            // Update video textures
+            TextureManager.UpdateVideoTextures((float)args.Time);
+
             base.OnUpdateFrame(args);
         }
 
