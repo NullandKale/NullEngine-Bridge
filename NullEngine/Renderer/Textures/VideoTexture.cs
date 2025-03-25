@@ -29,6 +29,8 @@ namespace NullEngine.Renderer.Textures
             }
 
             GL.BindTexture(TextureTarget.Texture2D, 0);
+
+            Update(0);
         }
 
         public void Update(double deltaTime)
@@ -57,6 +59,8 @@ namespace NullEngine.Renderer.Textures
                 videoReader.GetCurrentFramePtr()      // Use the raw BGR data from the Mat
             );
             GL.BindTexture(TextureTarget.Texture2D, 0);
+            this.width = videoReader.Width;
+            this.height = videoReader.Height;
         }
 
         public override void Dispose()

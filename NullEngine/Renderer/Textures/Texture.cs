@@ -41,7 +41,6 @@ namespace NullEngine.Renderer.Textures
                     throw new NotSupportedException($"Unsupported number of channels: {channels}");
                 }
 
-
                 GL.TexImage2D(
                     TextureTarget.Texture2D,
                     0,
@@ -58,6 +57,45 @@ namespace NullEngine.Renderer.Textures
             }
 
             // Set default texture parameters
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Clamp);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Clamp);
+
+            if (generateMipmaps)
+            {
+                GL.GenerateMipmap(GenerateMipmapTarget.Texture2D);
+            }
+
+            GL.BindTexture(TextureTarget.Texture2D, 0);
+        }
+
+        // New constructor: creates a texture from a pointer to raw image data.
+        // The data is assumed to be in BGRA format (8 bits per channel).
+        // The pointer is copied into the texture, so it does not need to remain valid afterwards.
+        public Texture(string name, IntPtr data, int width, int height, bool swapRB = false, bool generateMipmaps = true)
+        {
+            Name = name;
+            textureId = GL.GenTexture();
+            GL.BindTexture(TextureTarget.Texture2D, textureId);
+
+            // Upload the raw image data to OpenGL.
+            // Here we assume the provided data is in BGRA format.
+            GL.TexImage2D(
+                TextureTarget.Texture2D,
+                0,
+                PixelInternalFormat.Rgba,
+                width,
+                height,
+                0,
+                swapRB ? PixelFormat.Rgba : PixelFormat.Bgra,
+                PixelType.UnsignedByte,
+                data);
+
+            this.width = width;
+            this.height = height;
+
+            // Set default texture parameters.
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Clamp);

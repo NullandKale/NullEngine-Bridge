@@ -172,6 +172,13 @@ namespace RGBDRenderer.Components
             // Attach our shader and texture to the mesh, so the render pipeline uses them
             mesh.Texture = texture;
             mesh.shader = RGBDShader;
+
+            // Calculate aspect ratio of the COLOR portion (left half of image)
+            float aspectRatio = (texture.width / 2f) / texture.height;
+
+            // Scale mesh to match texture aspect ratio (assuming original mesh is 1x1 unit)
+            // We preserve the Y scale at 1 and adjust X scale to match aspect ratio
+            mesh.Transform.Scale = new Vector3(aspectRatio, 1, 1);
         }
     }
 }
