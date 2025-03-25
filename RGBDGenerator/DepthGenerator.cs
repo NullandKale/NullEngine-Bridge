@@ -251,9 +251,8 @@ namespace LKG_NVIDIA_RAYS.Utils
             depthFloatBuffer.CopyFromCPU(depthFloats); // Host-to-device transfer
                                                        // Synchronous data mirroring
 
-            totalPixels = outWidth * outHeight;
             depthFloatsToBGRAImageKernel(
-                totalPixels,
+                outWidth * outHeight,
                 depthFloatBuffer.View,          // The normalized depth data
                 inputImage.toDevice(device),     // The original color image
                 reusableOutImage.toDevice(device),
@@ -262,12 +261,6 @@ namespace LKG_NVIDIA_RAYS.Utils
                 alpha,
                 beta);
             device.Synchronize();
-
-            // CPU-side update handling
-            //var dstData = reusableOutImage.toCPU(); // Optional readback
-            // Only if needed for CPU processing
-            reusableOutImage.cpu_dirty = true; // State flag maintenance
-                                               // Cache coherency management
 
             return reusableOutImage; // Final processed frame
                                      // GPU resident for display efficiency

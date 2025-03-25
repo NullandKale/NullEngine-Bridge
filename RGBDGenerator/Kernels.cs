@@ -169,7 +169,7 @@ namespace GPU
                 if (x < colorWidth && y < colorHeight)
                 {
                     RGBA32 c = colorImage.GetColorAt(x, y);
-                    output.SetColorAt(x, y, c);
+                    output.SetColorAt(x, y, new RGBA32(c.toVec3()));
                 }
             }
             else
@@ -201,7 +201,7 @@ namespace GPU
                     byte gray = (byte)scaled;
                     RGBA32 depthColor = new RGBA32(gray, gray, gray, 255);
 
-                    output.SetColorAt(x, y, depthColor);
+                    output.SetColorAt(x, y, new RGBA32(depthColor.toVec3()));
                 }
             }
         }
