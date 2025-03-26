@@ -80,7 +80,8 @@ namespace GPU
             ArrayView<float> output,
             int outWidth,
             int outHeight,
-            float border)
+            float border,
+            int rgbSwapBgr)
         {
             int totalPixels = outWidth * outHeight;
             if (index >= totalPixels)
@@ -119,18 +120,37 @@ namespace GPU
 
             // If the color components are in [0,255], divide by 255.0f.
             // Here, we assume they are already normalized to [0,1]:
-            float r = color.z;
-            float g = color.y;
-            float b = color.x;
+            if (rgbSwapBgr == 0)
+            {
+                float r = color.z;
+                float g = color.y;
+                float b = color.x;
 
-            // Write values in NCHW order:
-            // - Red channel at offset 0,
-            // - Green channel at offset totalPixels,
-            // - Blue channel at offset 2 * totalPixels.
-            int pixelIndex = y * outWidth + x;
-            output[pixelIndex] = r;
-            output[pixelIndex + totalPixels] = g;
-            output[pixelIndex + 2 * totalPixels] = b;
+                // Write values in NCHW order:
+                // - Red channel at offset 0,
+                // - Green channel at offset totalPixels,
+                // - Blue channel at offset 2 * totalPixels.
+                int pixelIndex = y * outWidth + x;
+                output[pixelIndex] = r;
+                output[pixelIndex + totalPixels] = g;
+                output[pixelIndex + 2 * totalPixels] = b;
+            }
+            else
+            {
+                float r = color.x;
+                float g = color.y;
+                float b = color.z;
+
+                // Write values in NCHW order:
+                // - Red channel at offset 0,
+                // - Green channel at offset totalPixels,
+                // - Blue channel at offset 2 * totalPixels.
+                int pixelIndex = y * outWidth + x;
+                output[pixelIndex] = r;
+                output[pixelIndex + totalPixels] = g;
+                output[pixelIndex + 2 * totalPixels] = b;
+            }
+
         }
 
         /// <summary>
@@ -147,7 +167,8 @@ namespace GPU
             int depthWidth,
             int depthHeight,
             float alpha,
-            float beta)
+            float beta,
+            int rgbSwapBGR)
         {
             int totalPixels = output.width * output.height;
             if (index >= totalPixels)
@@ -169,7 +190,15 @@ namespace GPU
                 if (x < colorWidth && y < colorHeight)
                 {
                     RGBA32 c = colorImage.GetColorAt(x, y);
-                    output.SetColorAt(x, y, new RGBA32(c.toVec3()));
+                    if(rgbSwapBGR == 0)
+                    {
+                        output.SetColorAt(x, y, c);
+
+                    }
+                    else
+                    {
+                        output.SetColorAt(x, y, new RGBA32(c.toVec3()));
+                    }
                 }
             }
             else
@@ -200,8 +229,7 @@ namespace GPU
 
                     byte gray = (byte)scaled;
                     RGBA32 depthColor = new RGBA32(gray, gray, gray, 255);
-
-                    output.SetColorAt(x, y, new RGBA32(depthColor.toVec3()));
+                    output.SetColorAt(x, y, depthColor);
                 }
             }
         }

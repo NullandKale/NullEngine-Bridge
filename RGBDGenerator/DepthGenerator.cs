@@ -33,8 +33,8 @@ namespace LKG_NVIDIA_RAYS.Utils
     {
         public Context context;
         public Accelerator device;
-        public Action<Index1D, dImage, ArrayView<float>, int, int, float> imageToRGBFloatsKernel;
-        public Action<Index1D, ArrayView<float>, dImage, dImage, int, int, float, float> depthFloatsToBGRAImageKernel;
+        public Action<Index1D, dImage, ArrayView<float>, int, int, float, int> imageToRGBFloatsKernel;
+        public Action<Index1D, ArrayView<float>, dImage, dImage, int, int, float, float, int> depthFloatsToBGRAImageKernel;
 
         private readonly InferenceSession _session; // ONNX inference engine
                                                     // Long-lived for multiple inference runs
@@ -68,13 +68,13 @@ namespace LKG_NVIDIA_RAYS.Utils
 
             context = Context.Create(builder => builder.CPU().Cuda().
                                             EnableAlgorithms().
-                                            Math(MathMode.Default).
-                                            Inlining(InliningMode.Conservative).
+                                            Math(MathMode.Fast32BitOnly).
+                                            Inlining(InliningMode.Aggressive).
                                             AutoAssertions().
-                                            Optimize(OptimizationLevel.O0));
+                                            Optimize(OptimizationLevel.O1));
             device = context.GetPreferredDevice(preferCPU: debug).CreateAccelerator(context);
-            imageToRGBFloatsKernel = device.LoadAutoGroupedStreamKernel<Index1D, dImage, ArrayView<float>, int, int, float>(Kernels.ImageToRGBFloats);
-            depthFloatsToBGRAImageKernel = device.LoadAutoGroupedStreamKernel<Index1D, ArrayView<float>, dImage, dImage, int, int, float, float>(Kernels.DepthFloatsToBGRAImageFull);
+            imageToRGBFloatsKernel = device.LoadAutoGroupedStreamKernel<Index1D, dImage, ArrayView<float>, int, int, float, int>(Kernels.ImageToRGBFloats);
+            depthFloatsToBGRAImageKernel = device.LoadAutoGroupedStreamKernel<Index1D, ArrayView<float>, dImage, dImage, int, int, float, float, int>(Kernels.DepthFloatsToBGRAImageFull);
 
             // Validation and initialization phase
             _targetWidth = targetWidth; // Width persisted for lifecycle
@@ -83,20 +83,8 @@ namespace LKG_NVIDIA_RAYS.Utils
                                           // Critical for tensor dimensions
             border = 0.0f;
 
-            // Configure and load ONNX model
-            var sessionOptions = new SessionOptions
-            {
-                LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING, // Reduce logging overhead
-                EnableCpuMemArena = true, // Enable memory arena for better performance
-                ExecutionMode = ExecutionMode.ORT_SEQUENTIAL, // Sequential mode is typically faster for single session
-                InterOpNumThreads = 16,
-                IntraOpNumThreads = 16,
-            };
-
-            // Enable graph optimizations
-            sessionOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
-
-            // Load model
+            var sessionOptions = SessionOptions.MakeSessionOptionWithCudaProvider(0);
+            sessionOptions.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE;  // verbose to check node placements
             _session = new InferenceSession(modelPath, sessionOptions);
 
             // Preallocation strategy for consistent performance
@@ -125,10 +113,10 @@ namespace LKG_NVIDIA_RAYS.Utils
                                          // Frees up GPU resources
         }
 
-        public GPUImage ComputeDepth(GPUImage inputImage)
+        public GPUImage ComputeDepth(GPUImage inputImage, bool RGBSwapBGR = false)
         {
             /// STAGE 1: GPU PREPROCESSING ///
-
+            /// 
             int totalPixels = _targetWidth * _targetHeight; // Frame size constant
                                                             // Used for buffer sizing
 
@@ -152,7 +140,8 @@ namespace LKG_NVIDIA_RAYS.Utils
                 _targetWidth, // Resize target
                               // Maintains aspect ratio
                 _targetHeight,
-                border);
+                border, 
+                RGBSwapBGR ? 1 : 0);
             device.Synchronize(); // CPU-GPU synchronization
                                       // Framerate limiter, necessary for data safety
 
@@ -259,7 +248,7 @@ namespace LKG_NVIDIA_RAYS.Utils
                 _targetWidth,                    // The inference depthWidth
                 _targetHeight,                   // The inference depthHeight
                 alpha,
-                beta);
+                beta, RGBSwapBGR ? 1 : 0);
             device.Synchronize();
 
             return reusableOutImage; // Final processed frame

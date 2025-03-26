@@ -8,6 +8,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 
 namespace GPU
 {
@@ -38,6 +39,23 @@ namespace GPU
 
             this.data = new int[width * height];
             Buffer.BlockCopy(data, 0, this.data, 0, data.Length);
+        }
+
+        public GPUImage(int width, int height, int[] data)
+        {
+            this.width = width;
+            this.height = height;
+
+            this.data = new int[width * height];
+            Buffer.BlockCopy(data, 0, this.data, 0, data.Length * sizeof(int));
+        }
+
+        public GPUImage(int width, int height, IntPtr data)
+        {
+            this.width = width;
+            this.height = height;
+            this.data = new int[width * height];
+            Marshal.Copy(data, this.data, 0, this.data.Length);
         }
 
         public GPUImage(float[,] floatData)
@@ -178,6 +196,12 @@ namespace GPU
             }
 
             return ref data;
+        }
+
+        public void fromCPU_UNSAFE(IntPtr data)
+        {
+            Marshal.Copy(data, this.data, 0, this.data.Length);
+            cpu_dirty = true;
         }
 
         public Bitmap GetBitmap()

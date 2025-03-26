@@ -5,40 +5,51 @@ using NullEngine.Renderer.Components;
 using NullEngine.Renderer.Mesh;
 using NullEngine.Renderer.Shaders;
 using NullEngine.Renderer.Textures;
+using NullEngine.Utils;
 using OpenTK.Mathematics;
+using OpenTK.Windowing.Common.Input;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using static OpenCvSharp.Stitcher;
 using static System.Net.Mime.MediaTypeNames;
 
 namespace RGBDGenerator.Components
 {
-    // RGBDComponent implements IComponent and is responsible for using a specially crafted shader 
-    // to displace mesh vertices based on the depth data encoded into the texture.
-    // If a new input image is provided (via drag-and-drop), it is assumed not to be an RGBD image.
-    // In that case, the component generates an RGBD image from the input using the DepthGenerator.
+    // RGBDComponent handles images, video files, and live camera feeds.
+    // For videos, it uses an AsyncVideoReader; for camera feeds, it uses an AsyncCameraReader.
+    // In either case, each frame is converted to an RGBD image, saved via VideoWriter, and applied to the mesh.
     public class RGBDComponent : IComponent
     {
-        // This Filename is filled from the JSON file’s "Properties" section
+        // For image mode the filename is loaded from the JSON "Properties" section.
         public string Filename;
-
-        // To store the loaded texture.
+        // The texture that will be used by the mesh.
         public Texture texture = null;
-
         // The custom shader that does the depth-based displacement.
         public Shader RGBDShader;
-
-        // Track pending drag-and-drop files.
+        // Pending file from drag-and-drop.
         private string pendingFilename;
-
-        // DepthGenerator instance to compute depth for non-RGBD input images.
+        // DepthGenerator used for computing depth.
         private DepthGenerator depthGenerator;
+
+        // --- Fields for video/camera support ---
+        // Flag indicating whether the current stream is a video file.
+        private bool isVideo = false;
+        // Flag indicating that a camera feed is in use.
+        private bool usingCamera = false;
+        // Flag indicating that the stream has finished (for video files).
+        private bool videoFinished = false;
+        // The file-based video reader.
+        private AsyncVideoReader videoReader = null;
+        // The live camera reader.
+        private AsyncCameraReader cameraReader = null;
+        // VideoWriter used for writing processed frames.
+        private VideoWriter videoWriter = null;
+        // A temporary GPUImage instance for video frame processing.
+        private GPUImage tempVideoFrame;
 
         public RGBDComponent()
         {
@@ -46,7 +57,7 @@ namespace RGBDGenerator.Components
             texture = null;
 
             // Initialize the depth generator with the desired inference size.
-            int inferenceSize = 42 * 14; 
+            int inferenceSize = 37 * 14;
             depthGenerator = new DepthGenerator(inferenceSize, inferenceSize, "Assets/depth-anything-v2-small.onnx");
 
             // Subscribe to file drop events.
@@ -55,67 +66,60 @@ namespace RGBDGenerator.Components
             // Create the custom RGBD shader.
             RGBDShader = new Shader(
                 // Vertex shader
-                """
+                @"
                 #version 330 core
-
-                // Standard mesh layout: position, normal, and texture coordinates.
                 layout (location = 0) in vec3 position;
                 layout (location = 1) in vec3 normal;
                 layout (location = 2) in vec2 texCoords;
-
-                // Pass texture coordinates to the fragment shader.
                 out vec2 fragTexCoords;
-
-                // Uniforms for transformation matrices.
                 uniform mat4 model;
                 uniform mat4 view;
                 uniform mat4 projection;
-
-                // The RGBD texture: left half is color, right half is depth.
                 uniform sampler2D textureSampler;
-
                 void main()
                 {
-                    // Sample the right half for depth.
                     float depthVal = 1.0 - texture(textureSampler, vec2(texCoords.x * 0.5 + 0.5, texCoords.y)).r;
-                    // Shift depth from [0,1] to [-0.5,0.5].
                     depthVal -= 0.5;
-                    // Displace the vertex along its normal by the depth value.
                     vec3 displacedPos = position + normal * depthVal;
-
-                    // Standard model/view/projection transformation.
                     gl_Position = projection * view * model * vec4(displacedPos, 1.0);
-
-                    // For color sampling, use the left half of the texture.
                     fragTexCoords = vec2(texCoords.x * 0.5, texCoords.y);
                 }
-                """,
+                ",
                 // Fragment shader
-                """
+                @"
                 #version 330 core
-
                 in vec2 fragTexCoords;
                 out vec4 FragColor;
                 uniform sampler2D textureSampler;
-
                 void main()
                 {
-                    // Sample the color from the left half.
                     FragColor = texture(textureSampler, fragTexCoords);
                 }
-                """);
+                ");
         }
 
-        /// <summary>
-        /// Generates an RGBD image from an RGB input image.
-        /// Loads the image from disk, computes depth using DepthGenerator,
-        /// and returns the resulting RGBD image as a Bitmap.
-        /// </summary>
+        // File drop handler. If a file is dropped, it is assumed to be a video file.
+        private void FileDrop(OpenTK.Windowing.Common.FileDropEventArgs obj)
+        {
+            if (obj.FileNames.Length > 0 && File.Exists(obj.FileNames[0]))
+            {
+                pendingFilename = obj.FileNames[0];
+                string ext = Path.GetExtension(pendingFilename).ToLower();
+                isVideo = (ext == ".mp4" || ext == ".avi" || ext == ".mov");
+                // When a new file is dropped, we assume it's not a camera feed.
+                usingCamera = false;
+                videoFinished = false;
+            }
+        }
+
+        // Generates an RGBD image from an image file.
         private Bitmap GenerateRGBDImageFromRGBImage(string filename)
         {
             if (GPUImage.TryLoad(filename, out GPUImage loadedImage))
             {
-                GPUImage output = depthGenerator.ComputeDepth(loadedImage);
+                Stopwatch stopwatch = Stopwatch.StartNew();
+                GPUImage output = depthGenerator.ComputeDepth(loadedImage, true);
+                stopwatch.Stop();
                 loadedImage.Dispose();
                 return output.GetBitmap();
             }
@@ -125,19 +129,33 @@ namespace RGBDGenerator.Components
             }
         }
 
-        /// <summary>
-        /// Handler for file drop events. Stores the first valid file for processing.
-        /// </summary>
-        private void FileDrop(OpenTK.Windowing.Common.FileDropEventArgs obj)
+        // Generates an RGBD image from an RGB bitmap (used for video/camera frames).
+        private GPUImage GenerateRGBDImageFromRGBBitmap(int width, int height, IntPtr rgbaData)
         {
-            if (obj.FileNames.Length > 0 && File.Exists(obj.FileNames[0]))
+            if (tempVideoFrame == null || tempVideoFrame.width != width || tempVideoFrame.height != height)
             {
-                pendingFilename = obj.FileNames[0];
+                tempVideoFrame = new GPUImage(width, height, rgbaData);
             }
+            else
+            {
+                tempVideoFrame.fromCPU_UNSAFE(rgbaData);
+            }
+            GPUImage output = depthGenerator.ComputeDepth(tempVideoFrame);
+            output.toCPU();
+            return output;
         }
 
-        // Because of how the JSON scene system works, we need to be able to "clone"
-        // our component so it can be reused without reinitializing everything from scratch.
+        // Creates a Texture from a Bitmap.
+        private Texture CreateTextureFromBitmap(Bitmap bmp)
+        {
+            Rectangle rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+            System.Drawing.Imaging.BitmapData bmpData = bmp.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, bmp.PixelFormat);
+            Texture tex = new Texture("RGBD", bmpData.Scan0, bmp.Width, bmp.Height, false);
+            bmp.UnlockBits(bmpData);
+            return tex;
+        }
+
+        // Clones the component.
         public object Clone()
         {
             RGBDComponent clone = new RGBDComponent();
@@ -145,9 +163,25 @@ namespace RGBDGenerator.Components
             return clone;
         }
 
+        // Handles keyboard input. Pressing D0 or D1 switches to a live camera feed.
         public void HandleKeyboardInput(BaseMesh mesh, KeyboardState keyboardState, float deltaTime)
         {
-            // Optionally handle keyboard input.
+            if (keyboardState.IsKeyPressed(Keys.D0))
+            {
+                // Switch to camera feed with index 0.
+                DisposeCurrentStream();
+                cameraReader = new AsyncCameraReader(0, true, true);
+                usingCamera = true;
+                videoFinished = false;
+            }
+            else if (keyboardState.IsKeyPressed(Keys.D1))
+            {
+                // Switch to camera feed with index 1.
+                DisposeCurrentStream();
+                cameraReader = new AsyncCameraReader(1, true, true);
+                usingCamera = true;
+                videoFinished = false;
+            }
         }
 
         public void HandleMouseInput(BaseMesh mesh, MouseState mouseState, Vector2 delta, bool isPressed)
@@ -155,39 +189,24 @@ namespace RGBDGenerator.Components
             // Optionally handle mouse input.
         }
 
-        /// <summary>
-        /// Loads or updates the texture for the mesh.
-        /// If a new file has been provided (via drag-and-drop), it is processed to generate an RGBD image.
-        /// The resulting RGBD image is then loaded into the TextureManager.
-        /// </summary>
+        // Loads texture in image mode.
         public void LoadTexture(BaseMesh mesh)
         {
-            // Process any pending drag-and-drop file.
+            if (isVideo)
+                return;
             if (!string.IsNullOrEmpty(pendingFilename))
             {
                 Filename = pendingFilename;
                 pendingFilename = null;
                 texture = null;
             }
-
-            // Only attempt to load a new texture if we don't already have one.
             if (File.Exists(Filename) && texture == null)
             {
-                // Assume new input images are not already RGBD.
-                // Generate an RGBD image from the input.
                 Bitmap rgbdBitmap = GenerateRGBDImageFromRGBImage(Filename);
                 if (rgbdBitmap != null)
                 {
-                    // Use the pointer-based constructor to create the texture.
-                    Rectangle rect = new Rectangle(0, 0, rgbdBitmap.Width, rgbdBitmap.Height);
-                    System.Drawing.Imaging.BitmapData bmpData = rgbdBitmap.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, rgbdBitmap.PixelFormat);
-
-                    texture = new Texture("RGBD", bmpData.Scan0, rgbdBitmap.Width, rgbdBitmap.Height, false);
-
-                    rgbdBitmap.UnlockBits(bmpData);
+                    texture = CreateTextureFromBitmap(rgbdBitmap);
                 }
-
-                // Only update the mesh if we have a valid texture.
                 if (texture != null && texture.width > 0 && texture.height > 0)
                 {
                     float aspectRatio = (texture.width / 2f) / texture.height;
@@ -196,17 +215,113 @@ namespace RGBDGenerator.Components
             }
         }
 
-        /// <summary>
-        /// Called once per frame to update the component.
-        /// Loads the texture if needed, and attaches the shader and texture to the mesh.
-        /// </summary>
+        // Disposes any existing video or camera stream and writer.
+        private void DisposeCurrentStream()
+        {
+            if (videoReader != null)
+            {
+                videoReader.Dispose();
+                videoReader = null;
+            }
+            if (cameraReader != null)
+            {
+                cameraReader.Dispose();
+                cameraReader = null;
+            }
+            if (videoWriter != null)
+            {
+                videoWriter.Dispose();
+                videoWriter = null;
+            }
+        }
+
+        // Updates the component in video or camera mode.
+        private void UpdateVideoFrame(BaseMesh mesh)
+        {
+            // If a new file is dropped, reset streams.
+            if (!string.IsNullOrEmpty(pendingFilename))
+            {
+                Filename = pendingFilename;
+                pendingFilename = null;
+                texture = null;
+                DisposeCurrentStream();
+                videoFinished = false;
+                usingCamera = false;
+            }
+
+            // Initialize file-based video stream if needed.
+            if (!videoFinished && !usingCamera && videoReader == null)
+            {
+                videoReader = new AsyncVideoReader(Filename, true, true);
+                string outputFilename = "output_" + Path.GetFileName(Filename);
+                videoWriter = new VideoWriter(outputFilename, videoReader.Fps, videoReader.Width * 2, videoReader.Height);
+            }
+            // For camera mode, we assume the cameraReader was already initialized in HandleKeyboardInput.
+
+            // Check end-of-stream for file-based video.
+            if (!usingCamera && videoReader != null && videoReader.EndOfVideo)
+            {
+                DisposeCurrentStream();
+                videoFinished = true;
+                return;
+            }
+
+            // If no stream exists, return.
+            if ((!usingCamera && videoReader == null) || (usingCamera && cameraReader == null))
+                return;
+
+            // Advance the frame.
+            if (usingCamera)
+                cameraReader.PopFrame();
+            else
+                videoReader.PopFrame();
+
+            // Retrieve the frame data.
+            IntPtr framePtr;
+            int width, height;
+            if (usingCamera)
+            {
+                framePtr = cameraReader.GetCurrentFramePtr();
+                width = cameraReader.Width;
+                height = cameraReader.Height;
+            }
+            else
+            {
+                framePtr = videoReader.GetCurrentFramePtr();
+                width = videoReader.Width;
+                height = videoReader.Height;
+            }
+
+            // Process the frame to produce an RGBD image.
+            GPUImage rgbdFrame = GenerateRGBDImageFromRGBBitmap(width, height, framePtr);
+
+            // Update texture.
+            if (texture != null)
+            {
+                texture.Dispose();
+            }
+            texture = new Texture("RGBD", rgbdFrame.data, rgbdFrame.width, rgbdFrame.height, !usingCamera);
+
+            // Write the processed frame to the output video.
+            if(videoWriter != null)
+            {
+                videoWriter.WriteFrame(rgbdFrame.data);
+            }
+        }
+
+        // Update method called every frame.
         public void Update(BaseMesh mesh, float deltaTime)
         {
-            LoadTexture(mesh);
+            if (isVideo || usingCamera)
+            {
+                UpdateVideoFrame(mesh);
+            }
+            else
+            {
+                LoadTexture(mesh);
+            }
             mesh.Texture = texture;
             mesh.shader = RGBDShader;
-
-            // Update the mesh scale to match the aspect ratio of the COLOR portion.
             if (texture != null)
             {
                 float aspectRatio = (texture.width / 2f) / texture.height;
