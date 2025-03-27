@@ -65,8 +65,8 @@ namespace RGBDGenerator.Components
             // Uncomment one of the following lines to select a specific ONNX model.
             //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small.onnx");
             //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large.onnx");
-            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small_fp16.onnx");
-            depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large_fp16.onnx");
+            depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small_fp16.onnx");
+            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large_fp16.onnx");
 
             // Hook into the window's file-drop event so that externally dropped files are automatically processed.
             Program.window.FileDrop += FileDrop;
@@ -306,7 +306,7 @@ namespace RGBDGenerator.Components
                 SceneManager.GetActiveScene().UpdateFieldOfView(newFov);
             }
 
-            // Adjust the active scene's z position using the O and L keys.
+            // Adjust the mesh's z position using the O and L keys.
             // O increases the z position, while L decreases it.
             if (keyboardState.IsKeyDown(Keys.O))
             {
