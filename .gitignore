@@ -9,3 +9,6 @@ obj/
 **/*.mp4
 **/*.png
 **/*.jpeg
+/RGBDGenerator/Assets/depth-anything-v2-large.onnx
+/RGBDGenerator/Assets/model_fp16.onnx
+/RGBDGenerator/Assets/depth-anything-v2-large_fp16.onnx

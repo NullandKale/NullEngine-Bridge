@@ -21,6 +21,15 @@ namespace NullEngine.Renderer.Scenes
         private List<BaseMesh> meshes = new List<BaseMesh>();
         private LKGCamera camera;
 
+        // Camera parameter fields
+        public Vector3 cameraTarget;
+        public Vector3 cameraUp;
+        public float fov;
+        public float viewcone;
+        public float aspect;
+        public float nearPlane;
+        public float farPlane;
+
         public Scene(BridgeWindowData bridgeData, Transform transform, float cameraSize = 1.0f, float focus = 0.0f, float offset = 1.0f)
         {
             CameraSize = cameraSize;
@@ -29,22 +38,68 @@ namespace NullEngine.Renderer.Scenes
 
             this.transform = transform;
 
-            Vector3 LKG_target = new Vector3(0.0f, 0.0f, 0.0f);
-
-            Vector3 LKG_up = new Vector3(0.0f, 1.0f, 0.0f);
-
-            // check that bridge initialized and the window initialized
+            // Check that Bridge is initialized and the window is valid
             bool isBridgeInitialized = bridgeData != null && bridgeData.Wnd != 0;
 
-            float fov = 14.0f;
-            float viewcone = isBridgeInitialized ? bridgeData.Viewcone : 40.0f;
-            float aspect = isBridgeInitialized ? bridgeData.DisplayAspect : 1.0f;
-            float nearPlane = 0.1f;
-            float farPlane = 100.0f;
+            // Initialize camera parameters
+            cameraTarget = new Vector3(0.0f, 0.0f, 0.0f);
+            cameraUp = new Vector3(0.0f, 1.0f, 0.0f);
+            fov = 14.0f;
+            viewcone = isBridgeInitialized ? bridgeData.Viewcone : 40.0f;
+            aspect = isBridgeInitialized ? bridgeData.DisplayAspect : 1.0f;
+            nearPlane = 0.1f;
+            farPlane = 100.0f;
 
-            camera = new LKGCamera(CameraSize, LKG_target, LKG_up, fov, viewcone, aspect, nearPlane, farPlane);
+            // Construct the initial camera
+            camera = new LKGCamera(CameraSize, cameraTarget, cameraUp, fov, viewcone, aspect, nearPlane, farPlane);
         }
 
+        private void ReconstructCamera()
+        {
+            camera = new LKGCamera(CameraSize, cameraTarget, cameraUp, fov, viewcone, aspect, nearPlane, farPlane);
+        }
+
+        public void UpdateCameraTarget(Vector3 newTarget)
+        {
+            cameraTarget = newTarget;
+            ReconstructCamera();
+        }
+
+        public void UpdateCameraUp(Vector3 newUp)
+        {
+            cameraUp = newUp;
+            ReconstructCamera();
+        }
+
+        public void UpdateFieldOfView(float newFov)
+        {
+            fov = newFov;
+            ReconstructCamera();
+        }
+
+        public void UpdateViewcone(float newViewcone)
+        {
+            viewcone = newViewcone;
+            ReconstructCamera();
+        }
+
+        public void UpdateAspect(float newAspect)
+        {
+            aspect = newAspect;
+            ReconstructCamera();
+        }
+
+        public void UpdateNearPlane(float newNearPlane)
+        {
+            nearPlane = newNearPlane;
+            ReconstructCamera();
+        }
+
+        public void UpdateFarPlane(float newFarPlane)
+        {
+            farPlane = newFarPlane;
+            ReconstructCamera();
+        }
 
         public void AddMesh(BaseMesh mesh)
         {
@@ -73,7 +128,7 @@ namespace NullEngine.Renderer.Scenes
                 mesh.HandleKeyboardInput(keyboardState, deltaTime);
             }
 
-            // Handle keyboard input
+            // Handle keyboard input for Focus and Offset adjustments
             if (keyboardState.IsKeyDown(Keys.Up))
             {
                 Focus += deltaTime;
@@ -112,40 +167,12 @@ namespace NullEngine.Renderer.Scenes
             // Compute the camera's view and projection matrices
             camera.ComputeViewProjectionMatrices(normalizedView, invert, Offset, Focus, out Matrix4 viewMatrix, out Matrix4 projectionMatrix);
 
-            // this doesnt work rotation needs to be solved somehow
-            //// Apply the scene's transform to the camera's view matrix
-            //Matrix4 sceneTransformMatrix = transform.GetModelMatrix();
-
-            //// Combine the scene transform with the view matrix
-            //Matrix4 inverseSceneTransform = sceneTransformMatrix.Inverted();
-            //Matrix4 combinedViewMatrix = viewMatrix * inverseSceneTransform;
-
-            // Log all matrices and transformation data
-            //Log.Debug("=== START CAMERA DEBUG INFO ===");
-            //Log.Debug($"Camera Size: {CameraSize}");
-            //Log.Debug($"Focus: {Focus}");
-            //Log.Debug($"Offset: {Offset}");
-            //Log.Debug($"Scene Position: {transform.Position}");
-            //Log.Debug($"Scene Rotation (Euler): {transform.Rotation}");
-            //Log.Debug($"Scene Scale: {transform.Scale}");
-            //Log.Debug("Scene Transform Matrix:");
-            //Log.Debug("\n" + sceneTransformMatrix.ToString());
-            //Log.Debug("View Matrix:");
-            //Log.Debug("\n" + viewMatrix.ToString());
-            //Log.Debug("Combined View Matrix:");
-            //Log.Debug("\n" + combinedViewMatrix.ToString());
-            //Log.Debug($"Forward Vector: {Forward}");
-            //Log.Debug($"Right Vector: {Right}");
-            //Log.Debug($"Up Vector: {Up}");
-            //Log.Debug("=== END CAMERA DEBUG INFO ===");
-
             // Render all meshes
             foreach (var mesh in meshes)
             {
                 mesh.Draw(viewMatrix, projectionMatrix);
             }
         }
-
 
         public LKGCamera GetCamera()
         {
@@ -154,14 +181,13 @@ namespace NullEngine.Renderer.Scenes
 
         public BaseMesh GetMesh(string meshName)
         {
-            foreach(BaseMesh mesh in meshes)
+            foreach (BaseMesh mesh in meshes)
             {
-                if(mesh.name == meshName)
+                if (mesh.name == meshName)
                 {
                     return mesh;
                 }
             }
-
             return null;
         }
     }

@@ -11,6 +11,7 @@ namespace NullEngine.Utils
         private Thread frameReadThread;
         private bool isRunning;
         private double frameIntervalMs;
+        private volatile bool isPaused = false;
 
         // Double buffer components.
         private Mat[] frameMats = new Mat[2];
@@ -26,13 +27,15 @@ namespace NullEngine.Utils
         public int Height { get; }
         public double Fps { get; }
 
-        // When true, the reader only advances when PopFrame is called.
         private bool singleFrameAdvance;
-        // When true, output frames are converted to RGBA.
         private bool useRGBA;
 
-        // Indicates that the video has reached its end.
+        // We no longer use EndOfVideo to stop looping.
         public bool EndOfVideo { get; private set; } = false;
+
+        // New field to track if the video has looped.
+        private volatile bool hasLooped = false;
+        public bool HasLooped => hasLooped;
 
         public AsyncVideoReader(string videoFile, bool singleFrameAdvance = false, bool useRGBA = false)
         {
@@ -49,7 +52,6 @@ namespace NullEngine.Utils
             Fps = capture.Fps;
             frameIntervalMs = 1000.0 / Fps;
 
-            // Allocate double buffers with the desired Mat type.
             MatType matType = useRGBA ? MatType.CV_8UC4 : MatType.CV_8UC3;
             frameMats[0] = new Mat(Height, Width, matType);
             frameMats[1] = new Mat(Height, Width, matType);
@@ -69,10 +71,8 @@ namespace NullEngine.Utils
         {
             if (singleFrameAdvance)
             {
-                // Single-frame mode: wait for a signal to advance.
-                while (isRunning && !EndOfVideo)
+                while (isRunning)
                 {
-                    // Wait until PopFrame signals to advance.
                     frameAdvanceEvent.WaitOne();
                     if (!isRunning)
                         break;
@@ -85,15 +85,16 @@ namespace NullEngine.Utils
                         bool frameRead = capture.Read(temp);
                         if (!frameRead)
                         {
-                            // No more frames. Set flag and signal ready to avoid blocking PopFrame.
-                            EndOfVideo = true;
-                            frameReadyEvent.Set();
-                            break;
+                            // Reset to beginning and mark as looped.
+                            capture.Set(VideoCaptureProperties.PosFrames, 0);
+                            hasLooped = true;
+                            frameRead = capture.Read(temp);
+                            if (!frameRead)
+                                continue;
                         }
 
                         if (useRGBA)
                         {
-                            // Convert BGR to RGBA.
                             Cv2.CvtColor(temp, targetMat, ColorConversionCodes.RGB2RGBA);
                         }
                         else
@@ -106,18 +107,22 @@ namespace NullEngine.Utils
                             currentBufferIndex = nextBufferIndex;
                         }
                     }
-                    // Signal that the new frame is ready.
                     frameReadyEvent.Set();
                 }
             }
             else
             {
-                // Automatic mode: advance frames at a fixed interval.
                 var timer = Stopwatch.StartNew();
                 long nextFrameTime = 0;
 
-                while (isRunning && !EndOfVideo)
+                while (isRunning)
                 {
+                    if (isPaused)
+                    {
+                        Thread.Sleep(50);
+                        continue;
+                    }
+
                     long currentTime = timer.ElapsedMilliseconds;
                     if (currentTime >= nextFrameTime)
                     {
@@ -129,9 +134,12 @@ namespace NullEngine.Utils
                             bool frameRead = capture.Read(temp);
                             if (!frameRead)
                             {
-                                // End-of-video reached.
-                                EndOfVideo = true;
-                                break;
+                                // Reset to beginning and mark as looped.
+                                capture.Set(VideoCaptureProperties.PosFrames, 0);
+                                hasLooped = true;
+                                frameRead = capture.Read(temp);
+                                if (!frameRead)
+                                    continue;
                             }
 
                             if (useRGBA)
@@ -153,30 +161,20 @@ namespace NullEngine.Utils
 
                     long sleepTime = nextFrameTime - timer.ElapsedMilliseconds;
                     if (sleepTime > 0)
-                    {
                         Thread.Sleep((int)Math.Max(1, sleepTime));
-                    }
                 }
             }
         }
 
-        /// <summary>
-        /// In single-frame mode, signals the reader to advance to the next frame and blocks until the frame is loaded.
-        /// In automatic mode, this method is a no-op.
-        /// </summary>
         public void PopFrame()
         {
-            if (singleFrameAdvance && !EndOfVideo)
+            if (singleFrameAdvance)
             {
                 frameAdvanceEvent.Set();
-                // Block until the frame is loaded or we reach the end.
                 frameReadyEvent.WaitOne();
             }
         }
 
-        /// <summary>
-        /// Returns a pointer to the data of the current frame.
-        /// </summary>
         public IntPtr GetCurrentFramePtr()
         {
             lock (bufferLock)
@@ -185,14 +183,48 @@ namespace NullEngine.Utils
             }
         }
 
+        public void Play()
+        {
+            if (!singleFrameAdvance)
+                isPaused = false;
+        }
+
+        public void Pause()
+        {
+            if (!singleFrameAdvance)
+                isPaused = true;
+        }
+
+        public void Stop()
+        {
+            if (!singleFrameAdvance)
+            {
+                Pause();
+                capture.Set(VideoCaptureProperties.PosFrames, 0);
+            }
+        }
+
+        public double GetCurrentPosition()
+        {
+            return capture.Get(VideoCaptureProperties.PosMsec);
+        }
+
+        public void Seek(double posMsec)
+        {
+            if (!singleFrameAdvance)
+            {
+                lock (bufferLock)
+                {
+                    capture.Set(VideoCaptureProperties.PosMsec, posMsec);
+                }
+            }
+        }
+
         public void Dispose()
         {
             isRunning = false;
             if (singleFrameAdvance)
-            {
-                // Signal to unblock the waiting thread.
                 frameAdvanceEvent.Set();
-            }
 
             if (frameReadThread != null && frameReadThread.IsAlive)
             {

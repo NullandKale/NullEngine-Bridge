@@ -62,45 +62,46 @@ namespace LKG_NVIDIA_RAYS.Utils
 
         private float border;
 
-        public DepthGenerator(int targetWidth, int targetHeight, string modelPath)
+        public DepthGenerator(int size, string modelPath)
         {
+            // Shape the size so that it becomes a multiple of 14.
+            // This rounds down to the nearest multiple of 14.
+            int adjustedSize = (int)Math.Floor(size / 14.0) * 14;
+            // Ensure a minimum size of 14.
+            if (adjustedSize < 14)
+                adjustedSize = 14;
+
             bool debug = false;
 
-            context = Context.Create(builder => builder.CPU().Cuda().
-                                            EnableAlgorithms().
-                                            Math(MathMode.Fast32BitOnly).
-                                            Inlining(InliningMode.Aggressive).
-                                            AutoAssertions().
-                                            Optimize(OptimizationLevel.O1));
+            context = Context.Create(builder => builder.CPU().Cuda()
+                                                .EnableAlgorithms()
+                                                .Math(MathMode.Fast32BitOnly)
+                                                .Inlining(InliningMode.Aggressive)
+                                                .AutoAssertions()
+                                                .Optimize(OptimizationLevel.O1));
             device = context.GetPreferredDevice(preferCPU: debug).CreateAccelerator(context);
             imageToRGBFloatsKernel = device.LoadAutoGroupedStreamKernel<Index1D, dImage, ArrayView<float>, int, int, float, int>(Kernels.ImageToRGBFloats);
             depthFloatsToBGRAImageKernel = device.LoadAutoGroupedStreamKernel<Index1D, ArrayView<float>, dImage, dImage, int, int, float, float, int>(Kernels.DepthFloatsToBGRAImageFull);
 
-            // Validation and initialization phase
-            _targetWidth = targetWidth; // Width persisted for lifecycle
-                                        // Must match model input specs
-            _targetHeight = targetHeight; // Height constraint enforcement
-                                          // Critical for tensor dimensions
+            // Use the shaped size for both targetWidth and targetHeight.
+            _targetWidth = adjustedSize;
+            _targetHeight = adjustedSize;
             border = 0.0f;
 
             var sessionOptions = SessionOptions.MakeSessionOptionWithCudaProvider(0);
-            sessionOptions.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE;  // verbose to check node placements
+            sessionOptions.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE;  // Verbose logging to check node placements
             _session = new InferenceSession(modelPath, sessionOptions);
 
             // Preallocation strategy for consistent performance
             int floatCount = 3 * _targetHeight * _targetWidth; // Input tensor size
-                                                               // Channels-first layout requirement
-            inputFloatData = new float[floatCount]; // Managed array initialization
-                                                    // Eliminates frame-to-frame allocations
+            inputFloatData = new float[floatCount];
 
-            // Tensor reuse for inference efficiency
+            // Tensor reuse for inference efficiency (NCHW format expected by ONNX)
             inputTensor = new DenseTensor<float>(inputFloatData, new[] { 1, 3, _targetHeight, _targetWidth });
-            // NCHW format expected by ONNX
-            // Wraps managed array for zero-copy
 
-            depthFloats = new float[_targetHeight * _targetWidth]; // Output pre-allocation
-                                                                   // Pinning-friendly contiguous memory
+            depthFloats = new float[_targetHeight * _targetWidth];
         }
+
 
         public void Dispose() // Resource cleanup implementation
                               // Critical for GPU memory management
