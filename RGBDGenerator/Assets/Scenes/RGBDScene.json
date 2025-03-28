@@ -1,7 +1,7 @@
 {
   "RGBDScene0": {
     "CameraSize": 2.0,
-    "Focus": 1.0,
+    "Focus": -0.08019859,
     "Offset": 1.0,
 
     "Transform": {
@@ -40,7 +40,7 @@
             }
           }
         ]
-      },
+      }
     ]
   }
 }

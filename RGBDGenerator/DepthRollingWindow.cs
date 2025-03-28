@@ -30,10 +30,71 @@ namespace GPU
 
         // Current insertion index into the circular buffer.
         public int CurrentIndex;
+        public int frameWidth;
+        public int frameHeight;
+
+        /// <summary>
+        /// Controls the sensitivity to edge detection in the depth map.
+        /// - Higher values (7.0-10.0): Fewer edges detected, resulting in smoother filtering across edges.
+        /// - Lower values (1.0-3.0): More edges detected, preserving more edge details and reducing ghosting.
+        /// Reasonable range: 1.0-10.0
+        /// </summary>
+        public float EdgeThreshold { get; set; } = 5.0f;
+
+        /// <summary>
+        /// Controls how much depth change between frames is considered motion.
+        /// - Higher values (6.0-8.0): Less sensitive to motion, more temporal smoothing but potential ghosting.
+        /// - Lower values (1.0-3.0): More sensitive to motion, less ghosting but more flicker may remain.
+        /// Reasonable range: 1.0-8.0
+        /// </summary>
+        public float MotionThreshold { get; set; } = 5.0f;
+
+        /// <summary>
+        /// Controls how quickly older frames lose influence.
+        /// - Higher values (3.0-5.0): Slower falloff, more frames contribute significantly to filtering.
+        /// - Lower values (1.0-2.0): Rapid falloff, recent frames dominate the filtering result.
+        /// Reasonable range: 1.0-5.0 (in frames)
+        /// </summary>
+        public float TemporalDecay { get; set; } = 6.5f;
+
+        /// <summary>
+        /// Defines when two depth values are considered similar enough for direct blending.
+        /// - Higher values (3.0-5.0): More tolerant of depth differences, smoother but potential ghosting.
+        /// - Lower values (0.5-1.5): Stricter matching, less ghosting but potential flicker.
+        /// Reasonable range: 0.5-5.0
+        /// </summary>
+        public float SimilarityDelta { get; set; } = 2.0f;
+
+        /// <summary>
+        /// Controls falloff for depth differences beyond SimilarityDelta.
+        /// - Higher values (7.0-10.0): Gradual falloff, more blending even with larger differences.
+        /// - Lower values (1.0-3.0): Steep falloff, sharp separation between different depths.
+        /// Reasonable range: 1.0-10.0
+        /// </summary>
+        public float SimilaritySigma { get; set; } = 3.0f;
+
+        /// <summary>
+        /// Controls how much temporal variance triggers fallback to current frame.
+        /// - Higher values (3.0-5.0): More temporal filtering even with high variance.
+        /// - Lower values (0.5-1.5): Quickly revert to current frame when variance is detected.
+        /// Reasonable range: 0.5-5.0
+        /// </summary>
+        public float VarianceThreshold { get; set; } = 2.5f;
+
+        /// <summary>
+        /// Defines the size of the spatial neighborhood for sampling.
+        /// - Higher values (2.0-3.0): Larger neighborhood (5x5 or 7x7), more blur but better stability.
+        /// - Lower values (0.5-1.0): Smaller neighborhood (3x3), sharper details but less stability.
+        /// Reasonable range: 0.5-3.0 (in pixels)
+        /// </summary>
+        public float SpatialTemporalRadius { get; set; } = 2.0f;
 
         // Allocate 20 frames, each of size 'frameSize' (for example, totalPixels).
-        public DepthRollingWindow(Accelerator device, int frameSize)
+        public DepthRollingWindow(Accelerator device, int frameWidth, int frameHeight, int frameSize)
         {
+            this.frameWidth = frameWidth;
+            this.frameHeight = frameHeight;
+
             Frame0 = device.Allocate1D<float>(frameSize);
             Frame1 = device.Allocate1D<float>(frameSize);
             Frame2 = device.Allocate1D<float>(frameSize);
@@ -89,12 +150,23 @@ namespace GPU
         // Create a device-friendly structure for the kernel.
         public dDepthRollingWindow ToDevice()
         {
-            return new dDepthRollingWindow(
-                CurrentIndex,
+            var result = new dDepthRollingWindow(
+                CurrentIndex, frameWidth, frameHeight,
                 Frame0, Frame1, Frame2, Frame3, Frame4,
                 Frame5, Frame6, Frame7, Frame8, Frame9,
                 Frame10, Frame11, Frame12, Frame13, Frame14,
                 Frame15, Frame16, Frame17, Frame18, Frame19);
+
+            // Set filter parameters
+            result.edgeThreshold = EdgeThreshold;
+            result.motionThreshold = MotionThreshold;
+            result.temporalDecay = TemporalDecay;
+            result.similarityDelta = SimilarityDelta;
+            result.similaritySigma = SimilaritySigma;
+            result.varianceThreshold = VarianceThreshold;
+            result.spatialTemporalRadius = SpatialTemporalRadius;
+
+            return result;
         }
 
         public void Dispose()
@@ -127,7 +199,15 @@ namespace GPU
     {
         // The current insertion index from the host.
         public int index;
-
+        public int frameWidth;
+        public int frameHeight;
+        public float edgeThreshold;
+        public float motionThreshold;
+        public float temporalDecay;
+        public float similarityDelta;
+        public float similaritySigma;
+        public float varianceThreshold;
+        public float spatialTemporalRadius;
         public ArrayView1D<float, Stride1D.Dense> Frame0;
         public ArrayView1D<float, Stride1D.Dense> Frame1;
         public ArrayView1D<float, Stride1D.Dense> Frame2;
@@ -150,49 +230,59 @@ namespace GPU
         public ArrayView1D<float, Stride1D.Dense> Frame19;
 
         public dDepthRollingWindow(
-            int index,
-            MemoryBuffer1D<float, Stride1D.Dense> frame0,
-            MemoryBuffer1D<float, Stride1D.Dense> frame1,
-            MemoryBuffer1D<float, Stride1D.Dense> frame2,
-            MemoryBuffer1D<float, Stride1D.Dense> frame3,
-            MemoryBuffer1D<float, Stride1D.Dense> frame4,
-            MemoryBuffer1D<float, Stride1D.Dense> frame5,
-            MemoryBuffer1D<float, Stride1D.Dense> frame6,
-            MemoryBuffer1D<float, Stride1D.Dense> frame7,
-            MemoryBuffer1D<float, Stride1D.Dense> frame8,
-            MemoryBuffer1D<float, Stride1D.Dense> frame9,
-            MemoryBuffer1D<float, Stride1D.Dense> frame10,
-            MemoryBuffer1D<float, Stride1D.Dense> frame11,
-            MemoryBuffer1D<float, Stride1D.Dense> frame12,
-            MemoryBuffer1D<float, Stride1D.Dense> frame13,
-            MemoryBuffer1D<float, Stride1D.Dense> frame14,
-            MemoryBuffer1D<float, Stride1D.Dense> frame15,
-            MemoryBuffer1D<float, Stride1D.Dense> frame16,
-            MemoryBuffer1D<float, Stride1D.Dense> frame17,
-            MemoryBuffer1D<float, Stride1D.Dense> frame18,
-            MemoryBuffer1D<float, Stride1D.Dense> frame19)
+            int index, int frameWidth, int frameHeight,
+            ArrayView1D<float, Stride1D.Dense> frame0,
+            ArrayView1D<float, Stride1D.Dense> frame1,
+            ArrayView1D<float, Stride1D.Dense> frame2,
+            ArrayView1D<float, Stride1D.Dense> frame3,
+            ArrayView1D<float, Stride1D.Dense> frame4,
+            ArrayView1D<float, Stride1D.Dense> frame5,
+            ArrayView1D<float, Stride1D.Dense> frame6,
+            ArrayView1D<float, Stride1D.Dense> frame7,
+            ArrayView1D<float, Stride1D.Dense> frame8,
+            ArrayView1D<float, Stride1D.Dense> frame9,
+            ArrayView1D<float, Stride1D.Dense> frame10,
+            ArrayView1D<float, Stride1D.Dense> frame11,
+            ArrayView1D<float, Stride1D.Dense> frame12,
+            ArrayView1D<float, Stride1D.Dense> frame13,
+            ArrayView1D<float, Stride1D.Dense> frame14,
+            ArrayView1D<float, Stride1D.Dense> frame15,
+            ArrayView1D<float, Stride1D.Dense> frame16,
+            ArrayView1D<float, Stride1D.Dense> frame17,
+            ArrayView1D<float, Stride1D.Dense> frame18,
+            ArrayView1D<float, Stride1D.Dense> frame19)
         {
             this.index = index;
-            Frame0 = frame0.View;
-            Frame1 = frame1.View;
-            Frame2 = frame2.View;
-            Frame3 = frame3.View;
-            Frame4 = frame4.View;
-            Frame5 = frame5.View;
-            Frame6 = frame6.View;
-            Frame7 = frame7.View;
-            Frame8 = frame8.View;
-            Frame9 = frame9.View;
-            Frame10 = frame10.View;
-            Frame11 = frame11.View;
-            Frame12 = frame12.View;
-            Frame13 = frame13.View;
-            Frame14 = frame14.View;
-            Frame15 = frame15.View;
-            Frame16 = frame16.View;
-            Frame17 = frame17.View;
-            Frame18 = frame18.View;
-            Frame19 = frame19.View;
+            this.frameWidth = frameWidth;
+            this.frameHeight = frameHeight;
+            edgeThreshold = 5.0f;
+            motionThreshold = 4.0f;
+            temporalDecay = 2.5f;
+            similarityDelta = 2.0f;
+            similaritySigma = 3.0f;
+            varianceThreshold = 1.5f;
+            spatialTemporalRadius = 2.0f;
+
+            Frame0 = frame0;
+            Frame1 = frame1;
+            Frame2 = frame2;
+            Frame3 = frame3;
+            Frame4 = frame4;
+            Frame5 = frame5;
+            Frame6 = frame6;
+            Frame7 = frame7;
+            Frame8 = frame8;
+            Frame9 = frame9;
+            Frame10 = frame10;
+            Frame11 = frame11;
+            Frame12 = frame12;
+            Frame13 = frame13;
+            Frame14 = frame14;
+            Frame15 = frame15;
+            Frame16 = frame16;
+            Frame17 = frame17;
+            Frame18 = frame18;
+            Frame19 = frame19;
         }
 
         // Indexer to access a frame by its time distance.
@@ -234,79 +324,249 @@ namespace GPU
 
     public static partial class Kernels
     {
-        /// <summary>
-        /// Filtering kernel that averages the 20 depth frames for each pixel using the time-ordered indexer.
-        /// </summary>
+        // Helper function to sample depth at specific xyz coordinates
+        public static float SampleDepth(int pixelX, int pixelY, int frameIdx, dDepthRollingWindow rollingWindow)
+        {
+            // Boundary checking
+            if (pixelX < 0 || pixelX >= rollingWindow.frameWidth ||
+                pixelY < 0 || pixelY >= rollingWindow.frameHeight ||
+                frameIdx < 0 || frameIdx >= 20)
+                return 0.0f;
+
+            return rollingWindow[frameIdx][pixelY * rollingWindow.frameWidth + pixelX];
+        }
+
+        // Modified DetectEdges with a 3D search over 20 frames with diminishing temporal weight
+        public static float DetectEdges(int x, int y, float currentDepth, dDepthRollingWindow rollingWindow)
+        {
+            if (currentDepth == 0.0f)
+                return 0.0f;
+
+            float maxWeightedDiff = 0.0f;
+            // Loop through 20 frames in the t dimension (including current frame at t=0)
+            for (int t = 0; t < 20; t++)
+            {
+                // Compute diminishing weight based on temporal distance.
+                float timeWeight = XMath.Exp(-((float)t) / rollingWindow.temporalDecay);
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        // Skip the center pixel when t == 0 to avoid comparing the pixel to itself.
+                        if (t == 0 && dx == 0 && dy == 0)
+                            continue;
+
+                        float neighborDepth = SampleDepth(x + dx, y + dy, t, rollingWindow);
+                        if (neighborDepth > 0.0f)
+                        {
+                            float diff = XMath.Abs(currentDepth - neighborDepth);
+                            float weightedDiff = timeWeight * diff;
+                            maxWeightedDiff = XMath.Max(maxWeightedDiff, weightedDiff);
+                        }
+                    }
+                }
+            }
+            // Normalize by the edge threshold and clamp to [0,1]
+            return XMath.Min(maxWeightedDiff / rollingWindow.edgeThreshold, 1.0f);
+        }
+
+        // Modified DetectMotion with a 3D search over 20 frames with diminishing temporal weight
+        public static float DetectMotion(int x, int y, float currentDepth, dDepthRollingWindow rollingWindow)
+        {
+            if (currentDepth == 0.0f)
+                return 0.0f;
+
+            float maxWeightedMotion = 0.0f;
+            int validSamples = 0;
+
+            // For motion detection, we start at t=1 (current frame is t=0)
+            for (int t = 1; t < 20; t++)
+            {
+                // Compute diminishing weight based on the frame distance
+                float timeWeight = XMath.Exp(-((float)t) / rollingWindow.temporalDecay);
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        float neighborDepth = SampleDepth(x + dx, y + dy, t, rollingWindow);
+                        if (neighborDepth > 0.0f)
+                        {
+                            float diff = XMath.Abs(neighborDepth - currentDepth);
+                            float weightedDiff = timeWeight * diff;
+                            maxWeightedMotion = XMath.Max(maxWeightedMotion, weightedDiff);
+                            validSamples++;
+                        }
+                    }
+                }
+            }
+
+            if (validSamples == 0)
+                return 0.0f;
+
+            // Normalize by the motion threshold, square the result for a non-linear response, and clamp to [0,1]
+            float normalizedMotion = maxWeightedMotion / rollingWindow.motionThreshold;
+            return XMath.Min(normalizedMotion * normalizedMotion, 1.0f);
+        }
+
+        // Improved filtering kernel with focus on flicker reduction while avoiding ghosting.
+        // Now also uses varianceThreshold to trigger fallback to the current frame when temporal variance is too high.
         public static void FilterDepthRollingWindow(
             Index1D index,
             dDepthRollingWindow rollingWindow,
             ArrayView<float> output)
         {
-            // Most recent frame value.
-            float v0 = rollingWindow[0][index];
-            if (v0 == 0.0f)
+            // Convert linear index to 2D coordinates
+            int x = index % rollingWindow.frameWidth;
+            int y = index / rollingWindow.frameWidth;
+
+            // Current depth value is our starting point
+            float currentDepth = SampleDepth(x, y, 0, rollingWindow);
+
+            // Early exit for invalid depths
+            if (currentDepth == 0.0f)
             {
                 output[index] = 0.0f;
                 return;
             }
 
-            // Parameters to control the weighting:
-            // tau: controls the age decay (lower tau means older frames count less).
-            // delta: if the difference from v0 is below delta, treat it as negligible.
-            // sigma: controls the exponential decay beyond delta.
-            const float tau = 3.0f;
-            const float delta = 3.0f;
-            const float sigma = 7.5f;
+            // 1. Analyze local characteristics
+            float edgeWeight = DetectEdges(x, y, currentDepth, rollingWindow);
+            float motionWeight = DetectMotion(x, y, currentDepth, rollingWindow);
 
-            float weightedSum = 0.0f;
-            float weightTotal = 0.0f;
-            float sumSq = 0.0f; // For computing weighted variance
+            // Combine edge and motion for overall confidence in current frame
+            // Higher means trust current frame more
+            float currentFrameConfidence = XMath.Max(edgeWeight, motionWeight);
 
-            // Loop over all 20 frames.
-            for (int i = 0; i < 20; i++)
+            // 2. Decide on filtering approach based on current frame confidence
+            float filteredDepth;
+
+            // A. Fast path for high confidence areas - skip temporal filtering to avoid ghosting
+            if (currentFrameConfidence > 0.7f)
             {
-                float vi = rollingWindow[i][index];
-                if (vi == 0.0f)
-                    continue;
+                filteredDepth = currentDepth;
+            }
+            // B. Perform temporal filtering for low to medium confidence areas
+            else
+            {
+                // Parameters for adaptive temporal filtering
+                float adaptiveDelta = rollingWindow.similarityDelta * (1.0f + edgeWeight);
+                float adaptiveSigma = rollingWindow.similaritySigma * (1.0f + 0.5f * motionWeight);
 
-                // Older frames (higher i) are downweighted exponentially.
-                float weightAge = XMath.Exp(-(float)i / tau);
+                // Accumulate weighted depths and weighted squares for variance calculation
+                float weightedSum = currentDepth; // Include current frame in sum
+                float weightedSquareSum = currentDepth * currentDepth;
+                float totalWeight = 1.0f;        // Current frame has base weight of 1
 
-                // Compute the difference weight.
-                float diff = XMath.Abs(vi - v0);
-                float weightDiff = (diff < delta) ? 1.0f : XMath.Exp(-(diff - delta) / sigma);
+                // Limit of frame history based on confidence
+                // Higher confidence = fewer historical frames used
+                int maxHistoryFrames = currentFrameConfidence < 0.3f ? 10 : 5;
 
-                float weight = weightAge * weightDiff;
-                weightedSum += weight * vi;
-                weightTotal += weight;
-                sumSq += weight * vi * vi;
+                // Process historical frames with adaptive weighting
+                for (int t = 1; t < maxHistoryFrames; t++)
+                {
+                    float frameDepth = SampleDepth(x, y, t, rollingWindow);
+                    if (frameDepth == 0.0f)
+                        continue;
+
+                    // 1. Apply exponential temporal decay
+                    float temporalWeight = XMath.Exp(-(float)t / rollingWindow.temporalDecay);
+
+                    // 2. Apply non-linear motion suppression - steep falloff for motion areas
+                    if (motionWeight > 0.1f)
+                    {
+                        temporalWeight *= XMath.Exp(-motionWeight * t * 2.0f);
+                    }
+
+                    // 3. Calculate depth similarity weight
+                    float depthDiff = XMath.Abs(frameDepth - currentDepth);
+                    float similarityWeight;
+
+                    // Apply adaptive thresholding based on local characteristics
+                    if (depthDiff < adaptiveDelta)
+                    {
+                        // For small differences, use weight close to 1
+                        similarityWeight = 1.0f - (depthDiff / adaptiveDelta) * 0.2f;
+                    }
+                    else
+                    {
+                        // For larger differences, drop off exponentially
+                        similarityWeight = 0.8f * XMath.Exp(-(depthDiff - adaptiveDelta) / adaptiveSigma);
+                    }
+
+                    // 4. Combine weights for this frame
+                    float frameWeight = temporalWeight * similarityWeight;
+
+                    // 5. Add contribution from spatial neighborhood if appropriate
+                    if (t <= 3 && currentFrameConfidence < 0.4f && depthDiff < adaptiveDelta * 1.5f)
+                    {
+                        int radius = (int)rollingWindow.spatialTemporalRadius;
+                        float spatialBoost = 0.0f;
+                        int validSamples = 0;
+
+                        // Look at neighboring pixels in this historical frame
+                        for (int dy = -radius; dy <= radius; dy += radius)
+                        {
+                            for (int dx = -radius; dx <= radius; dx += radius)
+                            {
+                                if (dx == 0 && dy == 0) continue;
+
+                                float neighborDepth = SampleDepth(x + dx, y + dy, t, rollingWindow);
+                                if (neighborDepth > 0.0f)
+                                {
+                                    // If neighbor is closer to current depth than the historical center pixel,
+                                    // use it as evidence for stability
+                                    float neighborDiff = XMath.Abs(neighborDepth - currentDepth);
+                                    if (neighborDiff < depthDiff)
+                                    {
+                                        spatialBoost += 1.0f - (neighborDiff / depthDiff);
+                                        validSamples++;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Apply spatial boost if we found valid neighbors
+                        if (validSamples > 0)
+                        {
+                            spatialBoost /= validSamples;
+                            // Scale boost by inverse of edge weight to preserve edges
+                            frameWeight *= (1.0f + spatialBoost * (1.0f - edgeWeight));
+                        }
+                    }
+
+                    // 6. Accumulate weighted contributions and squares for variance
+                    weightedSum += frameWeight * frameDepth;
+                    weightedSquareSum += frameWeight * frameDepth * frameDepth;
+                    totalWeight += frameWeight;
+                }
+
+                // Calculate weighted average
+                filteredDepth = weightedSum / totalWeight;
+
+                // Guard against excessive deviation from current frame to reduce ghosting
+                float maxDeviation = 0.02f * (1.0f - currentFrameConfidence);
+                float deviation = XMath.Abs(filteredDepth - currentDepth);
+
+                if (deviation > maxDeviation)
+                {
+                    // If deviation is too large, blend back toward current frame
+                    float blendFactor = maxDeviation / deviation;
+                    filteredDepth = currentDepth * (1.0f - blendFactor) + filteredDepth * blendFactor;
+                }
+
+                // Compute variance from the weighted square sum
+                float variance = (weightedSquareSum / totalWeight) - (filteredDepth * filteredDepth);
+                // If the temporal variance is too high, fallback toward the current frame
+                if (variance > rollingWindow.varianceThreshold)
+                {
+                    float blendFactor = rollingWindow.varianceThreshold / variance;
+                    blendFactor = XMath.Min(blendFactor, 1.0f);
+                    filteredDepth = currentDepth * (1.0f - blendFactor) + filteredDepth * blendFactor;
+                }
             }
 
-            // If no valid frames contributed, fall back to the most recent value.
-            if (weightTotal == 0.0f)
-            {
-                output[index] = v0;
-                return;
-            }
-
-            // Compute weighted average and variance.
-            float avg = weightedSum / weightTotal;
-            float variance = sumSq / weightTotal - avg * avg;
-
-            // Define a variance threshold.
-            // When variance is low (stable scene), we use the temporal average.
-            // When variance is high (scene change), we lean more on the most recent value.
-            const float varThreshold = 1.0f;
-            float blendFactor = XMath.Min(variance / varThreshold, 1.0f);
-
-            // Blend: if blendFactor is 0 then output is the average;
-            // if blendFactor is 1 then output is the most recent value.
-            float filtered = (1.0f - blendFactor) * avg + blendFactor * v0;
-            output[index] = filtered;
+            // Output the filtered depth
+            output[index] = filteredDepth;
         }
-
-
-
-
     }
 }

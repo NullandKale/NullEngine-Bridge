@@ -20,7 +20,22 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="Assets\depth-anything-v2-base.onnx">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Assets\depth-anything-v2-base_fp16.onnx">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Assets\depth-anything-v2-base_q4f16.onnx">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <None Update="Assets\depth-anything-v2-large.onnx">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Assets\depth-anything-v2-large_q4.onnx">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Assets\depth-anything-v2-large_q4f16.onnx">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="Assets\depth-anything-v2-small.onnx">

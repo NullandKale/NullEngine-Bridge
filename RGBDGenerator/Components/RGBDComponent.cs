@@ -53,6 +53,18 @@ namespace RGBDGenerator.Components
         private GPUImage tempVideoFrame;
         // Maintains the current play/pause state of the video stream.
         private bool videoPlaying = true;
+        private int mode = 0;
+
+        // --- New fields for aspect ratio override ---
+        // Stores the current aspect ratio value (which can be adjusted manually).
+        private float aspectRatioOverride = 0.0f;
+        // Flag that indicates whether the aspect ratio has been manually adjusted.
+        private bool manualAspectRatio = false;
+
+        // --- New fields for enhanced depth control ---
+        private float depthScale = 2.0f;      // Controls overall depth effect strength
+        private float depthBias = 0.1f;       // Adjusts the "zero point" of depth 
+        private float depthPower = 1.2f;      // Non-linear power for depth emphasis
 
         public RGBDComponent()
         {
@@ -63,19 +75,25 @@ namespace RGBDGenerator.Components
             // Choose an inference resolution for depth computation; here, 720 is selected as a balanced trade-off.
             int inferenceSize = 512;
             // Uncomment one of the following lines to select a specific ONNX model.
-            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small.onnx");
-            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large.onnx");
+
             depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small_fp16.onnx");
+            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small.onnx");
+
+            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-base_q4f16.onnx");
+            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-base_fp16.onnx");
+            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-base.onnx");
+
+            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large_q4f16.onnx");
+            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large_q4.onnx");
             //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large_fp16.onnx");
+            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large.onnx");
 
             // Hook into the window's file-drop event so that externally dropped files are automatically processed.
             Program.window.FileDrop += FileDrop;
 
-            // Build a custom shader for RGBD rendering.
-            // The vertex shader displaces vertices using depth information sampled from a texture.
-            // The fragment shader simply samples and outputs the texture color.
+            // Build a custom shader for RGBD rendering with enhanced depth controls
             RGBDShader = new Shader(
-                // Vertex shader source
+                // IMPROVED Vertex shader source with enhanced depth controls
                 @"
                 #version 330 core
                 // Per-vertex input attributes.
@@ -90,20 +108,44 @@ namespace RGBDGenerator.Components
                 uniform mat4 projection;
                 // Texture sampler for accessing RGBD data.
                 uniform sampler2D textureSampler;
+                uniform int mode;
+                
+                // Enhanced depth control uniforms
+                uniform float depthScale;    // Overall depth effect strength
+                uniform float depthBias;     // Shifts zero point of depth
+                uniform float depthPower;    // Non-linear transformation power
+                
                 void main()
                 {
-                    // Sample the red channel to extract depth, then remap it.
-                    float depthVal = 1.0 - texture(textureSampler, vec2(texCoords.x * 0.5 + 0.5, texCoords.y)).r;
-                    depthVal -= 0.5;
+                    // Sample depth from right half of texture (depth map)
+                    float rawDepth = texture(textureSampler, vec2(texCoords.x * 0.5 + 0.5, texCoords.y)).r;
+                    
+                    // Apply non-linear transformation to emphasize certain depth ranges
+                    float adjustedDepth = pow(rawDepth, depthPower);
+                    
+                    // Enhanced depth calculation with scale and bias
+                    float depthVal = (1.0 - adjustedDepth) * depthScale - depthBias;
+                    
                     // Displace the vertex along its normal by the computed depth value.
                     vec3 displacedPos = position + normal * depthVal;
+                    
                     // Transform the displaced vertex to clip space.
                     gl_Position = projection * view * model * vec4(displacedPos, 1.0);
+                    
                     // Adjust texture coordinates for the fragment shader.
-                    fragTexCoords = vec2(texCoords.x * 0.5, texCoords.y);
+                    if(mode == 0)
+                    {
+                        // color output (left half)
+                        fragTexCoords = vec2(texCoords.x * 0.5, texCoords.y);
+                    }
+                    else if(mode == 1)
+                    {
+                        // depth output for debugging (right half)
+                        fragTexCoords = vec2(texCoords.x * 0.5 + 0.5, texCoords.y);
+                    }
                 }
                 ",
-                // Fragment shader source
+                // Fragment shader source - unchanged
                 @"
                 #version 330 core
                 in vec2 fragTexCoords;
@@ -111,12 +153,18 @@ namespace RGBDGenerator.Components
                 out vec4 FragColor;
                 // Texture sampler for RGBD texture.
                 uniform sampler2D textureSampler;
+
                 void main()
                 {
                     // Output the texture color directly.
                     FragColor = texture(textureSampler, fragTexCoords);
                 }
                 ");
+
+            // Initialize depth control uniforms
+            RGBDShader.SetUniform("depthScale", depthScale);
+            RGBDShader.SetUniform("depthBias", depthBias);
+            RGBDShader.SetUniform("depthPower", depthPower);
         }
 
         // Event handler for processing file drops.
@@ -142,19 +190,14 @@ namespace RGBDGenerator.Components
         {
             if (GPUImage.TryLoad(filename, out GPUImage loadedImage))
             {
-                // Time the depth computation for potential performance diagnostics.
                 Stopwatch stopwatch = Stopwatch.StartNew();
-                // Compute the depth map; the second parameter may control channel swapping.
                 GPUImage output = depthGenerator.ComputeDepth(loadedImage, true);
                 stopwatch.Stop();
-                // Clean up the temporary GPU image after processing.
                 loadedImage.Dispose();
-                // Return the final RGBD Bitmap.
                 return output.GetBitmap();
             }
             else
             {
-                // Return null if the file failed to load.
                 return null;
             }
         }
@@ -163,60 +206,84 @@ namespace RGBDGenerator.Components
         // Reuses an existing GPUImage if dimensions match, or allocates a new one if necessary.
         private GPUImage GenerateRGBDImageFromRGBBitmap(int width, int height, IntPtr rgbaData)
         {
-            // Reuse the temporary GPUImage to minimize allocation overhead.
             if (tempVideoFrame == null || tempVideoFrame.width != width || tempVideoFrame.height != height)
             {
-                // Allocate a new GPUImage with the provided dimensions and raw data pointer.
                 tempVideoFrame = new GPUImage(width, height, rgbaData);
             }
             else
             {
-                // Update the existing GPUImage with new data (unsafe copy for performance).
                 tempVideoFrame.fromCPU_UNSAFE(rgbaData);
             }
-
-            // Compute depth using the provided frame.
-            // Note: The resulting GPUImage should not be disposed by the caller because it is managed internally.
             GPUImage output = depthGenerator.ComputeDepth(tempVideoFrame);
-            // Ensure the computed result is transferred to CPU-accessible memory.
             output.toCPU();
-
             return output;
         }
 
         // Converts a Bitmap into a Texture by locking its bits and passing the pixel data pointer.
-        // This enables efficient texture uploads to the GPU.
         private Texture CreateTextureFromBitmap(Bitmap bmp)
         {
-            // Define the rectangle covering the full image.
             Rectangle rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
-            // Lock the bitmap for read-only access to its pixel data.
             System.Drawing.Imaging.BitmapData bmpData = bmp.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, bmp.PixelFormat);
-            // Create a new Texture instance with the raw pixel data.
             Texture tex = new Texture("RGBD", bmpData.Scan0, bmp.Width, bmp.Height, false);
-            // Unlock the bitmap to free the resource.
             bmp.UnlockBits(bmpData);
             return tex;
         }
 
         // Creates a shallow clone of this component.
-        // Only the Filename field is copied since other resources (e.g. streams, textures) are expected to be reinitialized.
         public object Clone()
         {
             RGBDComponent clone = new RGBDComponent();
             clone.Filename = Filename;
+            // Copy depth settings
+            clone.depthScale = depthScale;
+            clone.depthBias = depthBias;
+            clone.depthPower = depthPower;
             return clone;
         }
 
-        // Processes keyboard input for playback control, camera switching, recording,
-        // and adjusts the camera's field of view using the I and K keys.
-        // Additionally, it adjusts the active scene's z position using the O and L keys.
         public void HandleKeyboardInput(BaseMesh mesh, KeyboardState keyboardState, float deltaTime)
         {
-            // Process controls only when not in live camera mode and when a video file is active.
+            // -- NEW: Depth parameter controls --
+            // Depth Scale adjustment
+            if (keyboardState.IsKeyDown(Keys.T))
+            {
+                depthScale += deltaTime * 0.5f;
+                RGBDShader.SetUniform("depthScale", depthScale);
+            }
+            if (keyboardState.IsKeyDown(Keys.G))
+            {
+                depthScale = Math.Max(0.1f, depthScale - deltaTime * 0.5f);
+                RGBDShader.SetUniform("depthScale", depthScale);
+            }
+
+            // Depth Bias adjustment
+            if (keyboardState.IsKeyDown(Keys.Y))
+            {
+                depthBias += deltaTime * 0.2f;
+                RGBDShader.SetUniform("depthBias", depthBias);
+            }
+            if (keyboardState.IsKeyDown(Keys.H))
+            {
+                depthBias -= deltaTime * 0.2f;
+                RGBDShader.SetUniform("depthBias", depthBias);
+            }
+
+            // Depth Power adjustment
+            if (keyboardState.IsKeyDown(Keys.U))
+            {
+                depthPower += deltaTime * 0.3f;
+                RGBDShader.SetUniform("depthPower", depthPower);
+            }
+            if (keyboardState.IsKeyDown(Keys.J))
+            {
+                depthPower = Math.Max(0.1f, depthPower - deltaTime * 0.3f);
+                RGBDShader.SetUniform("depthPower", depthPower);
+            }
+
+            // -- EXISTING CONTROLS -- 
+            // Video playback controls (when not using camera)
             if (!usingCamera && videoReader != null)
             {
-                // Space toggles between play and pause.
                 if (keyboardState.IsKeyPressed(Keys.Space))
                 {
                     if (videoPlaying)
@@ -230,15 +297,14 @@ namespace RGBDGenerator.Components
                         videoPlaying = true;
                     }
                 }
-                // The R key resets playback.
                 if (keyboardState.IsKeyPressed(Keys.R))
                 {
                     videoReader.Stop();
                     videoReader.Play();
                     videoPlaying = true;
                 }
-                // The Y key initiates recording.
-                if (keyboardState.IsKeyPressed(Keys.Y))
+                // Changed recording toggle from 'Y' to 'V' to avoid conflict with depth bias control.
+                if (keyboardState.IsKeyPressed(Keys.V))
                 {
                     videoReader.Stop();
                     videoReader.Dispose();
@@ -255,7 +321,13 @@ namespace RGBDGenerator.Components
                 }
             }
 
-            // Allow switching between multiple camera feeds using keys D1 to D5.
+            // Mode toggle
+            if (keyboardState.IsKeyPressed(Keys.M))
+            {
+                mode = (mode + 1) % 2;
+            }
+
+            // Camera selection
             if (keyboardState.IsKeyPressed(Keys.D1))
             {
                 DisposeCurrentStream();
@@ -292,22 +364,19 @@ namespace RGBDGenerator.Components
                 videoFinished = false;
             }
 
-            // Adjust the camera's Field of View using the I and K keys.
+            // Field of view adjustment
             if (keyboardState.IsKeyDown(Keys.I))
             {
-                // Increase FOV at a rate of 10 degrees per second.
                 float newFov = SceneManager.GetActiveScene().fov + deltaTime * 10.0f;
                 SceneManager.GetActiveScene().UpdateFieldOfView(newFov);
             }
             if (keyboardState.IsKeyDown(Keys.K))
             {
-                // Decrease FOV at a rate of 10 degrees per second.
                 float newFov = SceneManager.GetActiveScene().fov - deltaTime * 10.0f;
                 SceneManager.GetActiveScene().UpdateFieldOfView(newFov);
             }
 
-            // Adjust the mesh's z position using the O and L keys.
-            // O increases the z position, while L decreases it.
+            // Z-position adjustment
             if (keyboardState.IsKeyDown(Keys.O))
             {
                 mesh.Transform.Position = new Vector3(
@@ -322,6 +391,41 @@ namespace RGBDGenerator.Components
                     mesh.Transform.Position.Y,
                     mesh.Transform.Position.Z - deltaTime * 1.0f);
             }
+
+            // Aspect ratio adjustment
+            if (keyboardState.IsKeyDown(Keys.A))
+            {
+                aspectRatioOverride += deltaTime * 0.5f;
+                manualAspectRatio = true;
+            }
+            if (keyboardState.IsKeyDown(Keys.Z))
+            {
+                aspectRatioOverride -= deltaTime * 0.5f;
+                manualAspectRatio = true;
+            }
+
+            // Reset all adjustable values
+            if (keyboardState.IsKeyPressed(Keys.C))
+            {
+                if (texture != null)
+                {
+                    aspectRatioOverride = (texture.width / 2f) / texture.height;
+                }
+                else
+                {
+                    aspectRatioOverride = 1.0f;
+                }
+                manualAspectRatio = false;
+                SceneManager.GetActiveScene().UpdateFieldOfView(14.0f);
+
+                // Reset depth parameters to defaults
+                depthScale = 2.0f;
+                depthBias = 0.1f;
+                depthPower = 1.2f;
+                RGBDShader.SetUniform("depthScale", depthScale);
+                RGBDShader.SetUniform("depthBias", depthBias);
+                RGBDShader.SetUniform("depthPower", depthPower);
+            }
         }
 
         // Placeholder for mouse input handling; extend this if interactive manipulation is required.
@@ -331,8 +435,6 @@ namespace RGBDGenerator.Components
         }
 
         // Loads an image file as a texture when not in video mode.
-        // It checks for pending file drops, converts the image to an RGBD representation,
-        // and updates the mesh transform to maintain the correct aspect ratio.
         public void LoadTexture(BaseMesh mesh)
         {
             if (isVideo)
@@ -352,8 +454,13 @@ namespace RGBDGenerator.Components
                 }
                 if (texture != null && texture.width > 0 && texture.height > 0)
                 {
-                    float aspectRatio = (texture.width / 2f) / texture.height;
-                    mesh.Transform.Scale = new Vector3(aspectRatio, 1, 1);
+                    float computedAspectRatio = (texture.width / 2f) / texture.height;
+                    // If no manual override exists, use the computed aspect ratio.
+                    if (!manualAspectRatio)
+                    {
+                        aspectRatioOverride = computedAspectRatio;
+                    }
+                    mesh.Transform.Scale = new Vector3(aspectRatioOverride, 1, 1);
                 }
             }
         }
@@ -445,10 +552,17 @@ namespace RGBDGenerator.Components
             }
             mesh.Texture = texture;
             mesh.shader = RGBDShader;
+            mesh.shader.SetUniform("mode", mode);
+
+            // Update the mesh scale using the aspect ratio override.
             if (texture != null)
             {
-                float aspectRatio = (texture.width / 2f) / texture.height;
-                mesh.Transform.Scale = new Vector3(aspectRatio, 1, 1);
+                // If no manual aspect ratio is set, update it from the texture.
+                if (!manualAspectRatio)
+                {
+                    aspectRatioOverride = (texture.width / 2f) / texture.height;
+                }
+                mesh.Transform.Scale = new Vector3(aspectRatioOverride, 1, 1);
             }
         }
     }

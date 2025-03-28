@@ -12,3 +12,8 @@ obj/
 /RGBDGenerator/Assets/depth-anything-v2-large.onnx
 /RGBDGenerator/Assets/model_fp16.onnx
 /RGBDGenerator/Assets/depth-anything-v2-large_fp16.onnx
+/RGBDGenerator/Assets/depth-anything-v2-large_q4.onnx
+/RGBDGenerator/Assets/depth-anything-v2-large_q4f16.onnx
+/RGBDGenerator/Assets/depth-anything-v2-base.onnx
+/RGBDGenerator/Assets/depth-anything-v2-base_fp16.onnx
+/RGBDGenerator/Assets/depth-anything-v2-base_q4f16.onnx

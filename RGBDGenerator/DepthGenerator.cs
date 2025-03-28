@@ -36,7 +36,7 @@ namespace LKG_NVIDIA_RAYS.Utils
 
         private GPUImage? reusableOutImage;
 
-        private DepthRollingWindow? rollingWindow;
+        public DepthRollingWindow? rollingWindow;
 
         private float border;
 
@@ -147,15 +147,6 @@ namespace LKG_NVIDIA_RAYS.Utils
                 reusableOutImage = new GPUImage(outWidth, outHeight);
             }
 
-            // Dynamic range normalization
-            float minVal = depthFloats.Min();
-            float maxVal = depthFloats.Max();
-            float range = maxVal - minVal;
-            if (range < 1e-6f)
-                range = 1e-6f;
-            float alpha = 255.0f / range;
-            float beta = -minVal * alpha;
-
             if (depthFloatBuffer == null || depthFloatBuffer.Length < totalPixels)
             {
                 depthFloatBuffer?.Dispose();
@@ -163,19 +154,29 @@ namespace LKG_NVIDIA_RAYS.Utils
             }
             depthFloatBuffer.CopyFromCPU(depthFloats);
 
-            // --- New: update the rolling window and filter the depth ---
+            // --- Update the rolling window and filter the depth ---
             if (rollingWindow == null)
-                rollingWindow = new DepthRollingWindow(device, totalPixels);
+                rollingWindow = new DepthRollingWindow(device, _targetWidth, _targetHeight, totalPixels);
             // Add the current depth frame into the circular buffer.
             rollingWindow.AddFrame(depthFloatBuffer);
 
             // Allocate a temporary buffer for the filtered depth.
             var filteredDepthBuffer = device.Allocate1D<float>(totalPixels);
 
-            // Invoke the filtering kernel using the rolling window. 
-            // The dDepthRollingWindow indexer will map [0] to the most recent and [19] to the oldest.
+            // Invoke the filtering kernel using the rolling window.
             filterDepthRollingWindowKernel(totalPixels, rollingWindow.ToDevice(), filteredDepthBuffer.View);
             device.Synchronize();
+
+            // Compute dynamic range normalization based on the filtered depth values
+            float[] filteredDepthFloats = new float[totalPixels];
+            filteredDepthBuffer.CopyToCPU(filteredDepthFloats);
+            float minVal = filteredDepthFloats.Min();
+            float maxVal = filteredDepthFloats.Max();
+            float range = maxVal - minVal;
+            if (range < 1e-6f)
+                range = 1e-6f;
+            float alpha = 255.0f / range;
+            float beta = -minVal * alpha;
 
             // Now use the filtered depth values for image postprocessing.
             depthFloatsToBGRAImageKernel(
@@ -186,11 +187,13 @@ namespace LKG_NVIDIA_RAYS.Utils
                 _targetWidth,
                 _targetHeight,
                 alpha,
-                beta, RGBSwapBGR ? 1 : 0);
+                beta,
+                RGBSwapBGR ? 1 : 0);
             device.Synchronize();
 
             filteredDepthBuffer.Dispose();
             return reusableOutImage;
         }
+
     }
 }
