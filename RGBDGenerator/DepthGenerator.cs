@@ -64,8 +64,21 @@ namespace LKG_NVIDIA_RAYS.Utils
             _targetHeight = adjustedSize;
             border = 0.0f;
 
-            var sessionOptions = SessionOptions.MakeSessionOptionWithCudaProvider(0);
-            sessionOptions.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE;
+            using var cudaProviderOptions = new OrtCUDAProviderOptions(); // Dispose this finally
+
+            var providerOptionsDict = new Dictionary<string, string>();
+            providerOptionsDict["cudnn_conv_use_max_workspace"] = "1";
+            providerOptionsDict["cudnn_conv1d_pad_to_nc1d"] = "1";
+
+            cudaProviderOptions.UpdateOptions(providerOptionsDict);
+
+            using SessionOptions sessionOptions = SessionOptions.MakeSessionOptionWithCudaProvider(cudaProviderOptions);
+
+            sessionOptions.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
+            sessionOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_EXTENDED;
+            sessionOptions.InterOpNumThreads = 16;
+            sessionOptions.IntraOpNumThreads = 16;
+
             _session = new InferenceSession(modelPath, sessionOptions);
 
             int floatCount = 3 * _targetHeight * _targetWidth;
@@ -80,7 +93,6 @@ namespace LKG_NVIDIA_RAYS.Utils
             _session.Dispose();
             inputFloatBuffer?.Dispose();
             depthFloatBuffer?.Dispose();
-            // Note: rollingWindow.Dispose() will free its buffers.
             rollingWindow?.Dispose();
         }
 

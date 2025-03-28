@@ -62,9 +62,9 @@ namespace RGBDGenerator.Components
         private bool manualAspectRatio = false;
 
         // --- New fields for enhanced depth control ---
-        private float depthScale = 2.0f;      // Controls overall depth effect strength
-        private float depthBias = 0.1f;       // Adjusts the "zero point" of depth 
-        private float depthPower = 1.2f;      // Non-linear power for depth emphasis
+        private float depthScale = 2.25f;      // Controls overall depth effect strength
+        private float depthBias = 0.6f;       // Adjusts the "zero point" of depth 
+        private float depthPower = 1.0f;      // Non-linear power for depth emphasis
 
         public RGBDComponent()
         {
@@ -102,47 +102,78 @@ namespace RGBDGenerator.Components
                 layout (location = 2) in vec2 texCoords;
                 // Pass texture coordinates to fragment shader.
                 out vec2 fragTexCoords;
+
                 // Uniform matrices for transforming vertex positions.
                 uniform mat4 model;
                 uniform mat4 view;
                 uniform mat4 projection;
                 // Texture sampler for accessing RGBD data.
                 uniform sampler2D textureSampler;
+                // Mode: 0 = color (left half), 1 = debug depth (right half), 2 = composite view.
                 uniform int mode;
-                
-                // Enhanced depth control uniforms
-                uniform float depthScale;    // Overall depth effect strength
-                uniform float depthBias;     // Shifts zero point of depth
-                uniform float depthPower;    // Non-linear transformation power
-                
+
+                // Enhanced depth control uniforms.
+                uniform float depthScale;    // Overall depth effect strength.
+                uniform float depthBias;     // Shifts zero point of depth.
+                uniform float depthPower;    // Non-linear transformation power.
+
+                // Returns the texture coordinate used for sampling depth.
+                // For modes 0 and 1, depth always comes from the right half.
+                // For mode 2 (composite mode), if the coordinate is in the left half, shift it right.
+                vec2 getDepthTexCoord(vec2 compTexCoord, int mode)
+                {
+                    if (mode == 2)
+                    {
+                        // In composite mode, if the current coordinate is in the left half (0 - 0.5),
+                        // shift it by 0.5 so that it samples from the right half (depth region).
+                        if (compTexCoord.x < 0.5)
+                            return vec2(compTexCoord.x + 0.5, compTexCoord.y);
+                        else
+                            return compTexCoord;
+                    }
+                    else
+                    {
+                        // In modes 0 and 1, always sample depth from the right half.
+                        return vec2(compTexCoord.x * 0.5 + 0.5, compTexCoord.y);
+                    }
+                }
+
+                // Returns the texture coordinate used for color output.
+                // Mode 0 displays the left half (color), mode 1 displays the right half (depth debug),
+                // and mode 2 shows the full composite texture.
+                vec2 getColorTexCoord(vec2 compTexCoord, int mode)
+                {
+                    if (mode == 0)
+                    {
+                        // Color is taken from the left half.
+                        return vec2(compTexCoord.x * 0.5, compTexCoord.y);
+                    }
+                    else if (mode == 1)
+                    {
+                        // Debug depth view: sample color from the right half.
+                        return vec2(compTexCoord.x * 0.5 + 0.5, compTexCoord.y);
+                    }
+                    else
+                    {
+                        // Composite mode: use the full composite texture coordinates.
+                        return compTexCoord;
+                    }
+                }
+
                 void main()
                 {
-                    // Sample depth from right half of texture (depth map)
-                    float rawDepth = texture(textureSampler, vec2(texCoords.x * 0.5 + 0.5, texCoords.y)).r;
-                    
-                    // Apply non-linear transformation to emphasize certain depth ranges
+                    // Obtain the depth coordinate based on the current mode.
+                    vec2 depthCoord = getDepthTexCoord(texCoords, mode);
+                    // Sample the depth value from the texture.
+                    float rawDepth = texture(textureSampler, depthCoord).r;
                     float adjustedDepth = pow(rawDepth, depthPower);
-                    
-                    // Enhanced depth calculation with scale and bias
-                    float depthVal = (1.0 - adjustedDepth) * depthScale - depthBias;
-                    
-                    // Displace the vertex along its normal by the computed depth value.
-                    vec3 displacedPos = position + normal * depthVal;
-                    
-                    // Transform the displaced vertex to clip space.
+                    float d = (1.0 - adjustedDepth) * depthScale - depthBias;
+                    // Extrude the vertex along its normal by the computed depth value.
+                    vec3 displacedPos = position + normal * d;
                     gl_Position = projection * view * model * vec4(displacedPos, 1.0);
-                    
-                    // Adjust texture coordinates for the fragment shader.
-                    if(mode == 0)
-                    {
-                        // color output (left half)
-                        fragTexCoords = vec2(texCoords.x * 0.5, texCoords.y);
-                    }
-                    else if(mode == 1)
-                    {
-                        // depth output for debugging (right half)
-                        fragTexCoords = vec2(texCoords.x * 0.5 + 0.5, texCoords.y);
-                    }
+    
+                    // Obtain the correct color coordinate based on the mode.
+                    fragTexCoords = getColorTexCoord(texCoords, mode);
                 }
                 ",
                 // Fragment shader source - unchanged
@@ -324,7 +355,7 @@ namespace RGBDGenerator.Components
             // Mode toggle
             if (keyboardState.IsKeyPressed(Keys.M))
             {
-                mode = (mode + 1) % 2;
+                mode = (mode + 1) % 3;
             }
 
             // Camera selection
@@ -419,9 +450,9 @@ namespace RGBDGenerator.Components
                 SceneManager.GetActiveScene().UpdateFieldOfView(14.0f);
 
                 // Reset depth parameters to defaults
-                depthScale = 2.0f;
-                depthBias = 0.1f;
-                depthPower = 1.2f;
+                depthScale = 1.0f;
+                depthBias = 0.0f;
+                depthPower = 0.8f;
                 RGBDShader.SetUniform("depthScale", depthScale);
                 RGBDShader.SetUniform("depthBias", depthBias);
                 RGBDShader.SetUniform("depthPower", depthPower);
@@ -557,13 +588,24 @@ namespace RGBDGenerator.Components
             // Update the mesh scale using the aspect ratio override.
             if (texture != null)
             {
-                // If no manual aspect ratio is set, update it from the texture.
-                if (!manualAspectRatio)
+                if (mode == 2)
                 {
-                    aspectRatioOverride = (texture.width / 2f) / texture.height;
+                    // In composite mode, the full texture width is used.
+                    float compositeAspect = texture.width / (float)texture.height;
+                    mesh.Transform.Scale = new Vector3(compositeAspect * 0.5f, 0.5f, 0.5f);
                 }
-                mesh.Transform.Scale = new Vector3(aspectRatioOverride, 1, 1);
+                else
+                {
+                    // For mode 0 and 1, use the half-width aspect ratio.
+                    float computedAspectRatio = (texture.width / 2f) / texture.height;
+                    if (!manualAspectRatio)
+                    {
+                        aspectRatioOverride = computedAspectRatio;
+                    }
+                    mesh.Transform.Scale = new Vector3(aspectRatioOverride, 1, 1);
+                }
             }
+
         }
     }
 }
