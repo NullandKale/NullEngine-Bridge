@@ -53,6 +53,9 @@
     <None Update="Assets\Scenes\RGBDScene.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+    <None Update="Assets\ultraface-version-RFB-320.onnx">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

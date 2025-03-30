@@ -113,13 +113,13 @@ namespace NullEngine.Utils
             if (string.IsNullOrEmpty(audioInputFile))
             {
                 arguments = $"-y -f rawvideo -pix_fmt bgr24 -s {width}x{height} -r {fps} -i - " +
-                            $"-c:v h264_nvenc -preset fast \"{outputFile}\"";
+                            $"-c:v hevc_nvenc -preset slow -rc constqp -qp 22 \"{outputFile}\"";
             }
             else
             {
                 arguments = $"-y -f rawvideo -pix_fmt bgr24 -s {width}x{height} -r {fps} -i - " +
                             $"-i \"{audioInputFile}\" -map 0:v:0 -map 1:a:0 " +
-                            $"-c:v h264_nvenc -preset fast -c:a copy -shortest \"{outputFile}\"";
+                            $"-c:v hevc_nvenc -preset slow -rc constqp -qp 22 -c:a copy -shortest \"{outputFile}\"";
             }
 
             var psi = new ProcessStartInfo

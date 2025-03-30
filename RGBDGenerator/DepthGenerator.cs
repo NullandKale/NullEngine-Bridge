@@ -1,6 +1,6 @@
 ﻿using System;
 using System.Buffers;
-using System.ComponentModel;
+using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using GPU;
@@ -11,6 +11,7 @@ using ILGPU.Runtime.Cuda;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using OpenCvSharp;
+using RGBDGenerator;
 
 namespace LKG_NVIDIA_RAYS.Utils
 {
@@ -20,12 +21,11 @@ namespace LKG_NVIDIA_RAYS.Utils
         public Accelerator device;
         public Action<Index1D, dImage, ArrayView<float>, int, int, float, int> imageToRGBFloatsKernel;
         public Action<Index1D, ArrayView<float>, dImage, dImage, int, int, float, float, int> depthFloatsToBGRAImageKernel;
-        // New filtering kernel that uses the rolling window.
         public Action<Index1D, dDepthRollingWindow, ArrayView<float>> filterDepthRollingWindowKernel;
 
         private readonly InferenceSession _session;
-        private readonly int _targetWidth;
-        private readonly int _targetHeight;
+        private int _targetWidth;
+        private int _targetHeight;
 
         private MemoryBuffer1D<float, Stride1D.Dense>? inputFloatBuffer;
         private MemoryBuffer1D<float, Stride1D.Dense>? depthFloatBuffer;
@@ -33,14 +33,18 @@ namespace LKG_NVIDIA_RAYS.Utils
         private float[]? inputFloatData;
         private DenseTensor<float>? inputTensor;
         private float[]? depthFloats;
-
         private GPUImage? reusableOutImage;
-
         public DepthRollingWindow? rollingWindow;
 
         private float border;
 
-        public DepthGenerator(int size, string modelPath)
+        // Optional: Hold a reference to the face detector
+        private readonly FaceDetector? _faceDetector;
+
+        // If you want to access or store the last set of faces:
+        public List<FaceBox>? LastDetectedFaces { get; private set; }
+
+        public DepthGenerator(int size, string modelPath, string? faceModelPath = null)
         {
             int adjustedSize = (int)Math.Floor(size / 14.0) * 14;
             if (adjustedSize < 14)
@@ -49,31 +53,30 @@ namespace LKG_NVIDIA_RAYS.Utils
             bool debug = false;
 
             context = Context.Create(builder => builder.CPU().Cuda()
-                                                .EnableAlgorithms()
-                                                .Math(MathMode.Fast32BitOnly)
-                                                .Inlining(InliningMode.Aggressive)
-                                                .AutoAssertions()
-                                                .Optimize(OptimizationLevel.O1));
+                .EnableAlgorithms()
+                .Math(MathMode.Fast32BitOnly)
+                .Inlining(InliningMode.Aggressive)
+                .AutoAssertions()
+                .Optimize(OptimizationLevel.O1));
             device = context.GetPreferredDevice(preferCPU: debug).CreateAccelerator(context);
+
             imageToRGBFloatsKernel = device.LoadAutoGroupedStreamKernel<Index1D, dImage, ArrayView<float>, int, int, float, int>(Kernels.ImageToRGBFloats);
             depthFloatsToBGRAImageKernel = device.LoadAutoGroupedStreamKernel<Index1D, ArrayView<float>, dImage, dImage, int, int, float, float, int>(Kernels.DepthFloatsToBGRAImageFull);
-            // Load the new filtering kernel.
             filterDepthRollingWindowKernel = device.LoadAutoGroupedStreamKernel<Index1D, dDepthRollingWindow, ArrayView<float>>(Kernels.FilterDepthRollingWindow);
 
             _targetWidth = adjustedSize;
             _targetHeight = adjustedSize;
             border = 0.0f;
 
-            using var cudaProviderOptions = new OrtCUDAProviderOptions(); // Dispose this finally
-
-            var providerOptionsDict = new Dictionary<string, string>();
-            providerOptionsDict["cudnn_conv_use_max_workspace"] = "1";
-            providerOptionsDict["cudnn_conv1d_pad_to_nc1d"] = "1";
-
+            using var cudaProviderOptions = new OrtCUDAProviderOptions();
+            var providerOptionsDict = new Dictionary<string, string>
+            {
+                ["cudnn_conv_use_max_workspace"] = "1",
+                ["cudnn_conv1d_pad_to_nc1d"] = "1"
+            };
             cudaProviderOptions.UpdateOptions(providerOptionsDict);
 
             using SessionOptions sessionOptions = SessionOptions.MakeSessionOptionWithCudaProvider(cudaProviderOptions);
-
             sessionOptions.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
             sessionOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_EXTENDED;
             sessionOptions.InterOpNumThreads = 16;
@@ -84,20 +87,50 @@ namespace LKG_NVIDIA_RAYS.Utils
             int floatCount = 3 * _targetHeight * _targetWidth;
             inputFloatData = new float[floatCount];
             inputTensor = new DenseTensor<float>(inputFloatData, new[] { 1, 3, _targetHeight, _targetWidth });
+            depthFloats = new float[_targetHeight * _targetWidth];
 
+            // If a face model path was provided, initialize the face detector
+            if (!string.IsNullOrEmpty(faceModelPath))
+            {
+                _faceDetector = new FaceDetector(faceModelPath, device);
+            }
+        }
+
+        public void UpdateInferenceSize(int size)
+        {
+            int adjustedSize = (int)Math.Floor(size / 14.0) * 14;
+            if (adjustedSize < 14)
+                adjustedSize = 14;
+
+            if (_targetWidth == adjustedSize && _targetHeight == adjustedSize)
+                return;
+
+            inputFloatBuffer?.Dispose();
+            inputFloatBuffer = null;
+            depthFloatBuffer?.Dispose();
+            depthFloatBuffer = null;
+            rollingWindow?.Dispose();
+            rollingWindow = null;
+
+            _targetWidth = adjustedSize;
+            _targetHeight = adjustedSize;
+
+            int floatCount = 3 * _targetHeight * _targetWidth;
+            inputFloatData = new float[floatCount];
+            inputTensor = new DenseTensor<float>(inputFloatData, new[] { 1, 3, _targetHeight, _targetWidth });
             depthFloats = new float[_targetHeight * _targetWidth];
         }
 
-        public void Dispose()
+        public GPUImage ComputeDepth(GPUImage inputImage, bool RGBSwapBGR = false, bool detectFaces = false)
         {
-            _session.Dispose();
-            inputFloatBuffer?.Dispose();
-            depthFloatBuffer?.Dispose();
-            rollingWindow?.Dispose();
-        }
+            dImage inputImageGPU = inputImage.toDevice(device);
 
-        public GPUImage ComputeDepth(GPUImage inputImage, bool RGBSwapBGR = false)
-        {
+            // Optionally run face detection
+            if (detectFaces && _faceDetector != null)
+            {
+                List<FaceBox> faces = _faceDetector.DetectFaces(inputImageGPU, threshold: 0.7f);
+            }
+
             int totalPixels = _targetWidth * _targetHeight;
 
             // STAGE 1: GPU PREPROCESSING
@@ -109,7 +142,7 @@ namespace LKG_NVIDIA_RAYS.Utils
 
             imageToRGBFloatsKernel(
                 totalPixels,
-                inputImage.toDevice(device),
+                inputImageGPU,
                 inputFloatBuffer.View,
                 _targetWidth,
                 _targetHeight,
@@ -120,8 +153,10 @@ namespace LKG_NVIDIA_RAYS.Utils
             inputFloatBuffer.CopyToCPU(inputFloatData);
 
             // STAGE 2: ONNX INFERENCE
-            var container = new List<NamedOnnxValue>();
-            container.Add(NamedOnnxValue.CreateFromTensor<float>("pixel_values", inputTensor!));
+            var container = new List<NamedOnnxValue>
+            {
+                NamedOnnxValue.CreateFromTensor<float>("pixel_values", inputTensor!)
+            };
 
             using (var outputs = _session.Run(container))
             {
@@ -135,7 +170,7 @@ namespace LKG_NVIDIA_RAYS.Utils
                 unsafe
                 {
                     var denseTensor = depthTensor as DenseTensor<float>;
-                    if (denseTensor?.Length != depthFloats.Length)
+                    if (denseTensor?.Length != depthFloats!.Length)
                         throw new InvalidOperationException("Invalid tensor format");
 
                     using var sourceHandle = denseTensor.Buffer.Pin();
@@ -164,36 +199,33 @@ namespace LKG_NVIDIA_RAYS.Utils
                 depthFloatBuffer?.Dispose();
                 depthFloatBuffer = device.Allocate1D<float>(totalPixels);
             }
-            depthFloatBuffer.CopyFromCPU(depthFloats);
+            depthFloatBuffer.CopyFromCPU(depthFloats!);
 
-            // --- Update the rolling window and filter the depth ---
             if (rollingWindow == null)
                 rollingWindow = new DepthRollingWindow(device, _targetWidth, _targetHeight, totalPixels);
-            // Add the current depth frame into the circular buffer.
+
             rollingWindow.AddFrame(depthFloatBuffer);
 
-            // Allocate a temporary buffer for the filtered depth.
             var filteredDepthBuffer = device.Allocate1D<float>(totalPixels);
-
-            // Invoke the filtering kernel using the rolling window.
             filterDepthRollingWindowKernel(totalPixels, rollingWindow.ToDevice(), filteredDepthBuffer.View);
             device.Synchronize();
 
-            // Compute dynamic range normalization based on the filtered depth values
             float[] filteredDepthFloats = new float[totalPixels];
             filteredDepthBuffer.CopyToCPU(filteredDepthFloats);
+            filteredDepthBuffer.Dispose();
+
             float minVal = filteredDepthFloats.Min();
             float maxVal = filteredDepthFloats.Max();
             float range = maxVal - minVal;
             if (range < 1e-6f)
                 range = 1e-6f;
+
             float alpha = 255.0f / range;
             float beta = -minVal * alpha;
 
-            // Now use the filtered depth values for image postprocessing.
             depthFloatsToBGRAImageKernel(
                 outWidth * outHeight,
-                filteredDepthBuffer.View,
+                depthFloatBuffer.View,
                 inputImage.toDevice(device),
                 reusableOutImage.toDevice(device),
                 _targetWidth,
@@ -203,9 +235,17 @@ namespace LKG_NVIDIA_RAYS.Utils
                 RGBSwapBGR ? 1 : 0);
             device.Synchronize();
 
-            filteredDepthBuffer.Dispose();
             return reusableOutImage;
         }
 
+        public void Dispose()
+        {
+            _session.Dispose();
+            inputFloatBuffer?.Dispose();
+            depthFloatBuffer?.Dispose();
+            rollingWindow?.Dispose();
+            _faceDetector?.Dispose();
+        }
     }
+
 }

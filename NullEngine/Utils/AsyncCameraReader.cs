@@ -42,7 +42,7 @@ namespace NullEngine.Utils
             CameraIndex = cameraIndex;
 
             // Open the camera device.
-            capture = new VideoCapture(cameraIndex);
+            capture = new VideoCapture(cameraIndex, VideoCaptureAPIs.DSHOW);
             if (!capture.IsOpened())
                 throw new ArgumentException($"Could not open camera with index: {cameraIndex}");
 

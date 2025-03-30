@@ -1,5 +1,6 @@
 ﻿using ILGPU.Runtime;
 using ILGPU;
+using ILGPU.Algorithms;
 
 namespace GPU
 {
@@ -190,7 +191,7 @@ namespace GPU
                 if (x < colorWidth && y < colorHeight)
                 {
                     RGBA32 c = colorImage.GetColorAt(x, y);
-                    if(rgbSwapBGR == 0)
+                    if (rgbSwapBGR == 0)
                     {
                         output.SetColorAt(x, y, c);
 
@@ -234,7 +235,64 @@ namespace GPU
             }
         }
 
+        /// <summary>
+        /// Kernel that resizes and normalizes a GPUImage into a float array (CHW layout),
+        /// suitable for UltraFace-320 or other face detectors that expect [1,3,H,W].
+        /// 
+        /// The output shape is effectively: [3, outHeight, outWidth].
+        /// So, 'output' must have length = 3 * outWidth * outHeight.
+        /// The index we get is in [0..(outWidth*outHeight-1)].
+        /// 
+        /// MeanVal and NormVal let you do:   (pixel - meanVal) * normVal
+        /// e.g., MeanVal=127, NormVal=1/128 =>  (color - 127)/128
+        /// </summary>
+        public static void FaceToCHWFloats(
+            Index1D idx,
+            dImage srcImage,
+            ArrayView1D<float, Stride1D.Dense> output,  // length = 3 * outW * outH
+            int outWidth,
+            int outHeight,
+            float meanVal,
+            float normVal)
+        {
+            int totalPixels = outWidth * outHeight;
+            if (idx >= totalPixels)
+                return;
 
+            int x = idx % outWidth;
+            int y = idx / outWidth;
 
+            // Convert to normalized [0..1] in the output space
+            float u = (x + 0.5f) / outWidth;
+            float v = (y + 0.5f) / outHeight;
+
+            // Map to source image coordinates
+            float inX = u * srcImage.width;
+            float inY = v * srcImage.height;
+
+            // Nearest neighbor
+            int sx = XMath.Min((int)inX, srcImage.width - 1);
+            int sy = XMath.Min((int)inY, srcImage.height - 1);
+
+            // RGBA32 => .r,.g,.b in [0..255]
+            RGBA32 color = srcImage.GetColorAt(sx, sy);
+            float r = color.r;
+            float g = color.g;
+            float b = color.b;
+
+            // Apply (pixel - meanVal)*normVal
+            r = (r - meanVal) * normVal;
+            g = (g - meanVal) * normVal;
+            b = (b - meanVal) * normVal;
+
+            // UltraFace typically uses input layout: [1, 3, H, W] in (R, G, B) channel order.
+            // So store CHW: 
+            //   output[ 0*totalPixels + idx ] = R
+            //   output[ 1*totalPixels + idx ] = G
+            //   output[ 2*totalPixels + idx ] = B
+            output[idx] = r; // Channel 0
+            output[idx + totalPixels] = g; // Channel 1
+            output[idx + 2 * totalPixels] = b; // Channel 2
+        }
     }
 }
