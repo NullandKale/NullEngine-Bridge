@@ -22,6 +22,9 @@ namespace LKG_NVIDIA_RAYS.Utils
         public Action<Index1D, dImage, ArrayView<float>, int, int, float, int> imageToRGBFloatsKernel;
         public Action<Index1D, ArrayView<float>, dImage, dImage, int, int, float, float, int> depthFloatsToBGRAImageKernel;
         public Action<Index1D, dDepthRollingWindow, ArrayView<float>> filterDepthRollingWindowKernel;
+        public Action<Index1D, ArrayView<float>, int, int, ArrayView<int>> AnalyzeDepthKernel;
+        public Action<Index1D, ArrayView<float>, float, float, ArrayView<float>> RemapDepthKernel;
+        public Action<Index1D, ArrayView<int>, ArrayView<float>> FindFocusDepthKernel;
 
         private readonly InferenceSession _session;
         private int _targetWidth;
@@ -35,6 +38,18 @@ namespace LKG_NVIDIA_RAYS.Utils
         private float[]? depthFloats;
         private GPUImage? reusableOutImage;
         public DepthRollingWindow? rollingWindow;
+
+        public MemoryBuffer1D<int, Stride1D.Dense> DepthHistogram;
+        public MemoryBuffer1D<float, Stride1D.Dense> FocusResult;
+        public MemoryBuffer1D<float, Stride1D.Dense> DepthMinMax;
+        public MemoryBuffer1D<float, Stride1D.Dense> FaceBoxesBuffer;
+
+        // Auto-focus properties
+        public bool AutoFocusEnabled { get; set; }
+        public float AutoFocusStrength { get; set; }
+        public bool AutoFocusUseFaces { get; set; }
+        public float LastFocusDepth { get; set; }
+        public float FocusSmoothing { get; set; }
 
         private float border;
 
@@ -119,6 +134,96 @@ namespace LKG_NVIDIA_RAYS.Utils
             inputFloatData = new float[floatCount];
             inputTensor = new DenseTensor<float>(inputFloatData, new[] { 1, 3, _targetHeight, _targetWidth });
             depthFloats = new float[_targetHeight * _targetWidth];
+        }
+
+        public void InitializeAutoFocus()
+        {
+            // You'd add these fields to the DepthGenerator class
+            AnalyzeDepthKernel = device.LoadAutoGroupedStreamKernel<Index1D, ArrayView<float>, int, int, ArrayView<int>>(Kernels.AnalyzeDepthForAutoFocus);
+            RemapDepthKernel = device.LoadAutoGroupedStreamKernel<Index1D, ArrayView<float>, float, float, ArrayView<float>>(Kernels.RemapDepthForAutoFocus);
+            FindFocusDepthKernel = device.LoadAutoGroupedStreamKernel<Index1D, ArrayView<int>, ArrayView<float>>(Kernels.FindOptimalFocusDepth);
+
+            // Create buffers for histogram and focus result
+            DepthHistogram = device.Allocate1D<int>(256);
+            FocusResult = device.Allocate1D<float>(2);  // [focusDepth, confidence]
+            DepthMinMax = device.Allocate1D<float>(2);  // [min, max]
+
+            // Add a face boxes buffer for when face detection is used
+            FaceBoxesBuffer = device.Allocate1D<float>(50 * 5);  // Up to 50 faces, 5 values per face
+
+            // Add properties to control auto-focus
+            AutoFocusEnabled = false;
+            AutoFocusStrength = 0.7f;
+            AutoFocusUseFaces = true;
+            LastFocusDepth = 0.5f;  // Initialize to mid-range
+            FocusSmoothing = 0.8f;  // How much to smooth focus changes between frames
+        }
+
+        // Add this method to apply auto-focus in the DepthGenerator.ComputeDepth method
+        public void ApplyAutoFocus(float[] depthFloats)
+        {
+            if (!AutoFocusEnabled)
+                return;
+
+            int totalPixels = depthFloats.Length;
+
+            // Copy depth data to GPU if not already there
+            depthFloatBuffer.CopyFromCPU(depthFloats);
+
+            // Calculate min/max depth for normalization
+            float minDepth = float.MaxValue;
+            float maxDepth = float.MinValue;
+            foreach (float d in depthFloats)
+            {
+                if (d > 0) // Skip invalid depths
+                {
+                    minDepth = Math.Min(minDepth, d);
+                    maxDepth = Math.Max(maxDepth, d);
+                }
+            }
+
+            // Update min/max on GPU
+            float[] minMaxArray = new float[] { minDepth, maxDepth };
+            DepthMinMax.CopyFromCPU(minMaxArray);
+
+            // Clear histogram
+            DepthHistogram.MemSetToZero();
+
+            // Analyze depth to build histogram
+            AnalyzeDepthKernel(
+                totalPixels,
+                depthFloatBuffer.View,
+                _targetWidth,
+                _targetHeight,
+                DepthHistogram.View);
+            device.Synchronize();
+
+            // Find optimal focus depth from histogram
+            FindFocusDepthKernel(1, DepthHistogram.View, FocusResult.View);
+            device.Synchronize();
+
+            // Get focus results
+            float[] focusResults = new float[2];
+            FocusResult.CopyToCPU(focusResults);
+
+            float focusDepth = focusResults[0];
+            float confidence = focusResults[1];
+
+            // Apply temporal smoothing to focus depth changes
+            LastFocusDepth = LastFocusDepth * FocusSmoothing +
+                                     focusDepth * (1 - FocusSmoothing);
+
+            // Remap depth values based on target focus
+            RemapDepthKernel(
+                totalPixels,
+                depthFloatBuffer.View,
+                LastFocusDepth,
+                AutoFocusStrength,
+                DepthMinMax.View);
+            device.Synchronize();
+
+            // Copy results back to CPU
+            depthFloatBuffer.CopyToCPU(depthFloats);
         }
 
         public GPUImage ComputeDepth(GPUImage inputImage, bool RGBSwapBGR = false, bool detectFaces = false)

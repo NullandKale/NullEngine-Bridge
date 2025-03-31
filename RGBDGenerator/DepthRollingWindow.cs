@@ -336,6 +336,21 @@ namespace GPU
             return rollingWindow[frameIdx][pixelY * rollingWindow.frameWidth + pixelX];
         }
 
+        // Helper to compute temporal gradient for a pixel position
+        public static float ComputeTemporalGradient(int x, int y, int frameIdx, dDepthRollingWindow rollingWindow)
+        {
+            if (frameIdx >= 19) // Can't compute gradient for the last frame in buffer
+                return 0.0f;
+
+            float currentDepth = SampleDepth(x, y, frameIdx, rollingWindow);
+            float nextFrameDepth = SampleDepth(x, y, frameIdx + 1, rollingWindow);
+
+            if (currentDepth <= 0.0f || nextFrameDepth <= 0.0f)
+                return 0.0f;
+
+            return nextFrameDepth - currentDepth;
+        }
+
         // Modified DetectEdges with a 3D search over 20 frames with diminishing temporal weight
         public static float DetectEdges(int x, int y, float currentDepth, dDepthRollingWindow rollingWindow)
         {
@@ -343,8 +358,27 @@ namespace GPU
                 return 0.0f;
 
             float maxWeightedDiff = 0.0f;
-            // Loop through 20 frames in the t dimension (including current frame at t=0)
-            for (int t = 0; t < 20; t++)
+
+            // First check immediate spatial neighborhood in current frame for strong edges
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    if (dx == 0 && dy == 0)
+                        continue;
+
+                    float neighborDepth = SampleDepth(x + dx, y + dy, 0, rollingWindow);
+                    if (neighborDepth > 0.0f)
+                    {
+                        float diff = XMath.Abs(currentDepth - neighborDepth);
+                        // Immediate spatial edges are weighted more heavily
+                        maxWeightedDiff = XMath.Max(maxWeightedDiff, diff * 1.5f);
+                    }
+                }
+            }
+
+            // Then look through temporal dimension with spatial components
+            for (int t = 1; t < 10; t++) // Only use first 10 frames for edge detection (more recent)
             {
                 // Compute diminishing weight based on temporal distance.
                 float timeWeight = XMath.Exp(-((float)t) / rollingWindow.temporalDecay);
@@ -352,10 +386,6 @@ namespace GPU
                 {
                     for (int dx = -1; dx <= 1; dx++)
                     {
-                        // Skip the center pixel when t == 0 to avoid comparing the pixel to itself.
-                        if (t == 0 && dx == 0 && dy == 0)
-                            continue;
-
                         float neighborDepth = SampleDepth(x + dx, y + dy, t, rollingWindow);
                         if (neighborDepth > 0.0f)
                         {
@@ -366,11 +396,12 @@ namespace GPU
                     }
                 }
             }
+
             // Normalize by the edge threshold and clamp to [0,1]
             return XMath.Min(maxWeightedDiff / rollingWindow.edgeThreshold, 1.0f);
         }
 
-        // Modified DetectMotion with a 3D search over 20 frames with diminishing temporal weight
+        // Modified DetectMotion with temporal gradient consistency from Video Depth Anything
         public static float DetectMotion(int x, int y, float currentDepth, dDepthRollingWindow rollingWindow)
         {
             if (currentDepth == 0.0f)
@@ -379,22 +410,63 @@ namespace GPU
             float maxWeightedMotion = 0.0f;
             int validSamples = 0;
 
-            // For motion detection, we start at t=1 (current frame is t=0)
-            for (int t = 1; t < 20; t++)
+            // Get temporal gradient at current position
+            float currentGradient = ComputeTemporalGradient(x, y, 0, rollingWindow);
+
+            // For motion detection, we start at t=1 (previous frame is t=1)
+            for (int t = 1; t < 10; t++) // Focus on more recent frames for motion
             {
                 // Compute diminishing weight based on the frame distance
                 float timeWeight = XMath.Exp(-((float)t) / rollingWindow.temporalDecay);
-                for (int dy = -1; dy <= 1; dy++)
+
+                // Direct temporal difference at same position
+                float temporalDepth = SampleDepth(x, y, t, rollingWindow);
+                if (temporalDepth > 0.0f)
                 {
-                    for (int dx = -1; dx <= 1; dx++)
+                    // Check both absolute difference and gradient consistency
+                    float depthDiff = XMath.Abs(temporalDepth - currentDepth);
+
+                    // Get temporal gradient at this historical position
+                    float historicalGradient = ComputeTemporalGradient(x, y, t, rollingWindow);
+
+                    // Gradient inconsistency increases motion detection
+                    float gradientDiff = 0.0f;
+                    if (historicalGradient != 0.0f && currentGradient != 0.0f)
                     {
-                        float neighborDepth = SampleDepth(x + dx, y + dy, t, rollingWindow);
-                        if (neighborDepth > 0.0f)
+                        gradientDiff = XMath.Abs(historicalGradient - currentGradient);
+                        // Normalize by the smaller gradient to detect relative changes
+                        float minGradient = XMath.Min(XMath.Abs(historicalGradient), XMath.Abs(currentGradient));
+                        if (minGradient > 0.001f)
                         {
-                            float diff = XMath.Abs(neighborDepth - currentDepth);
-                            float weightedDiff = timeWeight * diff;
-                            maxWeightedMotion = XMath.Max(maxWeightedMotion, weightedDiff);
-                            validSamples++;
+                            gradientDiff /= minGradient;
+                            // Clamp large gradient differences to avoid instability
+                            gradientDiff = XMath.Min(gradientDiff, 5.0f);
+                        }
+                    }
+
+                    // Combine depth difference and gradient inconsistency
+                    float combinedDiff = depthDiff * (1.0f + gradientDiff * 0.5f);
+                    float weightedDiff = timeWeight * combinedDiff;
+
+                    maxWeightedMotion = XMath.Max(maxWeightedMotion, weightedDiff);
+                    validSamples++;
+                }
+
+                // Also check neighboring pixels (sparse sampling for efficiency)
+                if (t < 3) // Only for very recent frames
+                {
+                    for (int dy = -1; dy <= 1; dy += 2) // Only check -1, +1
+                    {
+                        for (int dx = -1; dx <= 1; dx += 2) // Only check -1, +1
+                        {
+                            float neighborDepth = SampleDepth(x + dx, y + dy, t, rollingWindow);
+                            if (neighborDepth > 0.0f)
+                            {
+                                float diff = XMath.Abs(neighborDepth - currentDepth);
+                                float weightedDiff = timeWeight * diff * 0.8f; // Slightly lower weight for spatial samples
+                                maxWeightedMotion = XMath.Max(maxWeightedMotion, weightedDiff);
+                                validSamples++;
+                            }
                         }
                     }
                 }
@@ -403,13 +475,70 @@ namespace GPU
             if (validSamples == 0)
                 return 0.0f;
 
-            // Normalize by the motion threshold, square the result for a non-linear response, and clamp to [0,1]
+            // Normalize by the motion threshold and apply a non-linear response
             float normalizedMotion = maxWeightedMotion / rollingWindow.motionThreshold;
             return XMath.Min(normalizedMotion * normalizedMotion, 1.0f);
         }
 
-        // Improved filtering kernel with focus on flicker reduction while avoiding ghosting.
-        // Now also uses varianceThreshold to trigger fallback to the current frame when temporal variance is too high.
+        // Find keyframes by analyzing temporal stability
+        public static int FindKeyFrameIndex(int x, int y, float currentDepth, dDepthRollingWindow rollingWindow)
+        {
+            // Skip if current depth is invalid
+            if (currentDepth <= 0.0f)
+                return 0;
+
+            // Start with the most recent frame as the default
+            int bestFrameIdx = 0;
+            float lowestInstability = float.MaxValue;
+
+            // Look through the first 10 frames for a stable reference
+            for (int t = 0; t < 10; t++)
+            {
+                float frameDepth = SampleDepth(x, y, t, rollingWindow);
+                if (frameDepth <= 0.0f)
+                    continue;
+
+                // Compute stability by checking gradient consistency with adjacent frames
+                float instability = 0.0f;
+                int validNeighbors = 0;
+
+                // Check temporal neighbors (previous and next frame)
+                for (int offset = -1; offset <= 1; offset += 2)
+                {
+                    int neighborT = t + offset;
+                    if (neighborT >= 0 && neighborT < 10)
+                    {
+                        float neighborDepth = SampleDepth(x, y, neighborT, rollingWindow);
+                        if (neighborDepth > 0.0f)
+                        {
+                            // Measure gradient discontinuity
+                            float depthDiff = XMath.Abs(frameDepth - neighborDepth);
+                            instability += depthDiff;
+                            validNeighbors++;
+                        }
+                    }
+                }
+
+                // Only consider frames with valid neighbors
+                if (validNeighbors > 0)
+                {
+                    instability /= validNeighbors;
+
+                    // Favor more recent frames by applying a slight penalty to older ones
+                    instability *= (1.0f + 0.1f * t);
+
+                    if (instability < lowestInstability)
+                    {
+                        lowestInstability = instability;
+                        bestFrameIdx = t;
+                    }
+                }
+            }
+
+            return bestFrameIdx;
+        }
+
+        // Improved filtering kernel inspired by Video Depth Anything
         public static void FilterDepthRollingWindow(
             Index1D index,
             dDepthRollingWindow rollingWindow,
@@ -433,71 +562,143 @@ namespace GPU
             float edgeWeight = DetectEdges(x, y, currentDepth, rollingWindow);
             float motionWeight = DetectMotion(x, y, currentDepth, rollingWindow);
 
+            // Find the best keyframe for this pixel based on temporal stability
+            int keyframeIdx = FindKeyFrameIndex(x, y, currentDepth, rollingWindow);
+            float keyframeDepth = SampleDepth(x, y, keyframeIdx, rollingWindow);
+
             // Combine edge and motion for overall confidence in current frame
             // Higher means trust current frame more
             float currentFrameConfidence = XMath.Max(edgeWeight, motionWeight);
 
-            // 2. Decide on filtering approach based on current frame confidence
+            // 2. Temporal gradient consistency analysis (inspired by Video Depth Anything)
+            // Compute gradient consistency across multiple frames to detect real motion vs noise
+            float gradientConsistency = 1.0f; // Default: assume consistent (1.0 = consistent, 0.0 = inconsistent)
+
+            if (currentFrameConfidence < 0.5f) // Only perform this expensive calculation for potentially stable areas
+            {
+                float gradientSum = 0.0f;
+                float gradientSqSum = 0.0f;
+                int gradientSamples = 0;
+
+                // Analyze recent frame temporal gradients (last 5 frames)
+                for (int t = 0; t < 4; t++)
+                {
+                    float gradient = ComputeTemporalGradient(x, y, t, rollingWindow);
+                    if (gradient != 0.0f)
+                    {
+                        gradientSum += gradient;
+                        gradientSqSum += gradient * gradient;
+                        gradientSamples++;
+                    }
+                }
+
+                if (gradientSamples >= 2)
+                {
+                    // Compute variance of gradients to detect consistency
+                    float meanGradient = gradientSum / gradientSamples;
+                    float gradientVariance = (gradientSqSum / gradientSamples) - (meanGradient * meanGradient);
+                    float normalizedVariance = gradientVariance / (0.01f + XMath.Abs(meanGradient));
+
+                    // Lower variance = more consistent gradients = more reliable temporal filtering
+                    gradientConsistency = XMath.Exp(-normalizedVariance / 0.5f);
+                }
+            }
+
+            // 3. Decide filtering approach based on analysis
             float filteredDepth;
 
-            // A. Fast path for high confidence areas - skip temporal filtering to avoid ghosting
-            if (currentFrameConfidence > 0.7f)
+            // A. Fast path for high-confidence unstable areas (edges or motion) - skip temporal filtering
+            if (currentFrameConfidence > 0.8f)
             {
                 filteredDepth = currentDepth;
             }
-            // B. Perform temporal filtering for low to medium confidence areas
+            // B. Video Depth Anything inspired temporal filtering using keyframes and gradient matching
             else
             {
-                // Parameters for adaptive temporal filtering
-                float adaptiveDelta = rollingWindow.similarityDelta * (1.0f + edgeWeight);
-                float adaptiveSigma = rollingWindow.similaritySigma * (1.0f + 0.5f * motionWeight);
+                // Segment window into reference frames and regular frames (keyframe approach)
+                // - First segment: Use the automatically detected keyframe as anchor
+                // - Second segment: Use current frame
 
-                // Accumulate weighted depths and weighted squares for variance calculation
-                float weightedSum = currentDepth; // Include current frame in sum
-                float weightedSquareSum = currentDepth * currentDepth;
-                float totalWeight = 1.0f;        // Current frame has base weight of 1
+                // Parameters for adaptive filtering based on local characteristics
+                float adaptiveDelta = rollingWindow.similarityDelta * (1.0f + edgeWeight * 0.5f);
+                float adaptiveSigma = rollingWindow.similaritySigma * (1.0f + motionWeight * 0.5f);
 
-                // Limit of frame history based on confidence
-                // Higher confidence = fewer historical frames used
-                int maxHistoryFrames = currentFrameConfidence < 0.3f ? 10 : 5;
+                // Start accumulation with a significant weight for the keyframe
+                float keyframeWeight = 3.0f * (1.0f - currentFrameConfidence) * gradientConsistency;
+                float weightedSum = keyframeDepth * keyframeWeight;
+                float totalWeight = keyframeWeight;
+
+                // Include current frame with high base weight - always maintain details
+                float currentFrameWeight = 1.0f + 0.5f * currentFrameConfidence;
+                weightedSum += currentDepth * currentFrameWeight;
+                totalWeight += currentFrameWeight;
+
+                // Collect additional frames with adaptive weights
+                // Limit history based on confidence - stable regions benefit from more history
+                int maxHistoryFrames = (int)(5 + (1.0f - currentFrameConfidence) * 10.0f * gradientConsistency);
+                maxHistoryFrames = XMath.Min(maxHistoryFrames, 15); // Cap at 15 frames
 
                 // Process historical frames with adaptive weighting
                 for (int t = 1; t < maxHistoryFrames; t++)
                 {
+                    // Skip keyframe as we already included it with special weight
+                    if (t == keyframeIdx)
+                        continue;
+
                     float frameDepth = SampleDepth(x, y, t, rollingWindow);
-                    if (frameDepth == 0.0f)
+                    if (frameDepth <= 0.0f)
                         continue;
 
                     // 1. Apply exponential temporal decay
                     float temporalWeight = XMath.Exp(-(float)t / rollingWindow.temporalDecay);
 
-                    // 2. Apply non-linear motion suppression - steep falloff for motion areas
-                    if (motionWeight > 0.1f)
+                    // 2. Apply gradient-aware motion suppression
+                    // Compare temporal gradients between current and historical position
+                    float currentGradient = ComputeTemporalGradient(x, y, 0, rollingWindow);
+                    float historicalGradient = ComputeTemporalGradient(x, y, t, rollingWindow);
+
+                    float gradientWeight = 1.0f;
+                    if (currentGradient != 0.0f && historicalGradient != 0.0f)
                     {
-                        temporalWeight *= XMath.Exp(-motionWeight * t * 2.0f);
+                        float gradientDiff = XMath.Abs(historicalGradient - currentGradient);
+                        float minGradient = XMath.Min(XMath.Abs(historicalGradient), XMath.Abs(currentGradient));
+                        if (minGradient > 0.001f)
+                        {
+                            float relativeGradientDiff = XMath.Min(gradientDiff / minGradient, 5.0f);
+                            gradientWeight = XMath.Exp(-relativeGradientDiff / 2.0f);
+                        }
                     }
+
+                    // Reduce weight for inconsistent gradients
+                    temporalWeight *= gradientWeight;
 
                     // 3. Calculate depth similarity weight
                     float depthDiff = XMath.Abs(frameDepth - currentDepth);
                     float similarityWeight;
 
-                    // Apply adaptive thresholding based on local characteristics
+                    // Apply adaptive thresholding
                     if (depthDiff < adaptiveDelta)
                     {
-                        // For small differences, use weight close to 1
+                        // For small differences, linear falloff
                         similarityWeight = 1.0f - (depthDiff / adaptiveDelta) * 0.2f;
                     }
                     else
                     {
-                        // For larger differences, drop off exponentially
+                        // For larger differences, exponential falloff
                         similarityWeight = 0.8f * XMath.Exp(-(depthDiff - adaptiveDelta) / adaptiveSigma);
                     }
 
                     // 4. Combine weights for this frame
                     float frameWeight = temporalWeight * similarityWeight;
 
-                    // 5. Add contribution from spatial neighborhood if appropriate
-                    if (t <= 3 && currentFrameConfidence < 0.4f && depthDiff < adaptiveDelta * 1.5f)
+                    // 5. Key frame adjustment - boost weight for frames close to the key frame
+                    if (XMath.Abs(t - keyframeIdx) <= 2)
+                    {
+                        frameWeight *= 1.5f;
+                    }
+
+                    // 6. Edge-aware spatial sampling for recent frames (t <= 2)
+                    if (t <= 2 && currentFrameConfidence < 0.5f)
                     {
                         int radius = (int)rollingWindow.spatialTemporalRadius;
                         float spatialBoost = 0.0f;
@@ -513,12 +714,14 @@ namespace GPU
                                 float neighborDepth = SampleDepth(x + dx, y + dy, t, rollingWindow);
                                 if (neighborDepth > 0.0f)
                                 {
-                                    // If neighbor is closer to current depth than the historical center pixel,
-                                    // use it as evidence for stability
-                                    float neighborDiff = XMath.Abs(neighborDepth - currentDepth);
-                                    if (neighborDiff < depthDiff)
+                                    // Calculate depth similarity with current position
+                                    float neighborToCurrentDiff = XMath.Abs(neighborDepth - currentDepth);
+
+                                    // If neighbor is closer to current depth, use it as evidence for stability
+                                    if (neighborToCurrentDiff < depthDiff)
                                     {
-                                        spatialBoost += 1.0f - (neighborDiff / depthDiff);
+                                        float relativeImprovement = 1.0f - (neighborToCurrentDiff / (depthDiff + 0.001f));
+                                        spatialBoost += relativeImprovement;
                                         validSamples++;
                                     }
                                 }
@@ -534,34 +737,30 @@ namespace GPU
                         }
                     }
 
-                    // 6. Accumulate weighted contributions and squares for variance
+                    // 7. Accumulate weighted contributions
                     weightedSum += frameWeight * frameDepth;
-                    weightedSquareSum += frameWeight * frameDepth * frameDepth;
                     totalWeight += frameWeight;
                 }
 
                 // Calculate weighted average
                 filteredDepth = weightedSum / totalWeight;
 
-                // Guard against excessive deviation from current frame to reduce ghosting
+                // Ensure we don't deviate too much from current frame (anti-ghosting)
                 float maxDeviation = 0.02f * (1.0f - currentFrameConfidence);
                 float deviation = XMath.Abs(filteredDepth - currentDepth);
 
                 if (deviation > maxDeviation)
                 {
-                    // If deviation is too large, blend back toward current frame
+                    // Blend back toward current frame proportionally to the excess deviation
                     float blendFactor = maxDeviation / deviation;
                     filteredDepth = currentDepth * (1.0f - blendFactor) + filteredDepth * blendFactor;
                 }
 
-                // Compute variance from the weighted square sum
-                float variance = (weightedSquareSum / totalWeight) - (filteredDepth * filteredDepth);
-                // If the temporal variance is too high, fallback toward the current frame
-                if (variance > rollingWindow.varianceThreshold)
+                // Additional safeguard: for high gradient inconsistency, blend back to current frame
+                if (gradientConsistency < 0.3f)
                 {
-                    float blendFactor = rollingWindow.varianceThreshold / variance;
-                    blendFactor = XMath.Min(blendFactor, 1.0f);
-                    filteredDepth = currentDepth * (1.0f - blendFactor) + filteredDepth * blendFactor;
+                    float blendRatio = gradientConsistency / 0.3f;
+                    filteredDepth = currentDepth * (1.0f - blendRatio) + filteredDepth * blendRatio;
                 }
             }
 
