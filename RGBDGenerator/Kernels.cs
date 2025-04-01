@@ -70,11 +70,6 @@ namespace GPU
             return new Vec2(jitteredU, jitteredV);
         }
 
-        /// <summary>
-        /// Kernel to scale an input image (in RGBA) to a target resolution and convert to an array of RGB floats 
-        /// in NCHW format (i.e. shape [1, 3, outHeight, outWidth]). The red, green, and blue channels are stored 
-        /// contiguously per channel.
-        /// </summary>
         public static void ImageToRGBFloats(
             Index1D index,
             dImage input,
@@ -97,8 +92,7 @@ namespace GPU
             float v = (y + 0.5f) / outHeight;
 
             // Adjust coordinates to zoom toward the center while leaving a border.
-            // When border is 0, use the full image.
-            // When border is 1, the effective image shrinks to a point.
+            // When border = 0 => full image; when border = 1 => shrinks to a point.
             float effectiveRegion = 1.0f - border;
             float uAdjusted = border * 0.5f + u * effectiveRegion;
             float vAdjusted = border * 0.5f + v * effectiveRegion;
@@ -107,52 +101,146 @@ namespace GPU
             float inX = uAdjusted * input.width;
             float inY = vAdjusted * input.height;
 
-            // Nearest-neighbor sampling
-            int srcX = (int)inX;
-            int srcY = (int)inY;
-            if (srcX >= input.width)
-                srcX = input.width - 1;
-            if (srcY >= input.height)
-                srcY = input.height - 1;
+            // ---------------------------------------------------------------------
+            // 1) Lanczos3 Resize
+            // ---------------------------------------------------------------------
+            float a = 3f; // number of lobes
+            int centerX = (int)XMath.Floor(inX);
+            int centerY = (int)XMath.Floor(inY);
 
-            // Retrieve the color and convert to Vec3.
-            // Assuming that toVec3() converts the color components to floats.
-            Vec3 color = input.GetColorAt(srcX, srcY).toVec3();
+            Vec3 accum = new Vec3(0f, 0f, 0f);
+            float totalWeight = 0f;
 
-            // If the color components are in [0,255], divide by 255.0f.
-            // Here, we assume they are already normalized to [0,1]:
+            for (int ky = -3; ky <= 3; ky++)
+            {
+                float dy = (centerY + 0.5f) - inY - ky;
+                float wy = LanczosWeight(dy, a);
+
+                int sampleY = centerY + ky;
+                if (sampleY < 0) sampleY = 0;
+                else if (sampleY >= input.height) sampleY = input.height - 1;
+
+                for (int kx = -3; kx <= 3; kx++)
+                {
+                    float dx = (centerX + 0.5f) - inX - kx;
+                    float wx = LanczosWeight(dx, a);
+
+                    int sampleX = centerX + kx;
+                    if (sampleX < 0) sampleX = 0;
+                    else if (sampleX >= input.width) sampleX = input.width - 1;
+
+                    float w = wx * wy;
+                    Vec3 c = input.GetColorAt(sampleX, sampleY).toVec3();
+                    accum.x += c.x * w;
+                    accum.y += c.y * w;
+                    accum.z += c.z * w;
+                    totalWeight += w;
+                }
+            }
+
+            if (totalWeight < 1e-9f)
+                totalWeight = 1f; // avoid divide-by-zero
+
+            Vec3 color = accum / totalWeight; // This is our Lanczos-resampled color
+
+            // ---------------------------------------------------------------------
+            // 2) Simple "unsharp masking" for Sharpening
+            //    We'll do a small 3x3 blur of the *same* region for the high-pass.
+            //    Then:  color = color + sharpenStrength*(color - blurColor).
+            // ---------------------------------------------------------------------
+            const float sharpenStrength = 0.3f;  // Adjust as desired
+            {
+                float blurWeight = 0f;
+                Vec3 blurAccum = new Vec3(0f, 0f, 0f);
+
+                // A small 3x3 box blur around inX,inY in the original image
+                // (not around the Lanczos result).
+                for (int by = -1; by <= 1; by++)
+                {
+                    int sampleY = centerY + by;
+                    if (sampleY < 0) sampleY = 0;
+                    else if (sampleY >= input.height) sampleY = input.height - 1;
+
+                    for (int bx = -1; bx <= 1; bx++)
+                    {
+                        int sampleX = centerX + bx;
+                        if (sampleX < 0) sampleX = 0;
+                        else if (sampleX >= input.width) sampleX = input.width - 1;
+
+                        Vec3 c = input.GetColorAt(sampleX, sampleY).toVec3();
+                        blurAccum.x += c.x;
+                        blurAccum.y += c.y;
+                        blurAccum.z += c.z;
+                        blurWeight += 1f;
+                    }
+                }
+
+                if (blurWeight < 1e-9f)
+                    blurWeight = 1f;
+
+                Vec3 blurColor = blurAccum / blurWeight;
+
+                // Compare "color" (Lanczos sample) vs. "blurColor" (3x3 box blur)
+                // and push them apart by `sharpenStrength`.
+                // Usually: sharpened = color + alpha * (color - blurColor).
+                color = color + sharpenStrength * (color - blurColor);
+            }
+
+            // ---------------------------------------------------------------------
+            // 3) Brightness Scaling
+            // ---------------------------------------------------------------------
+            // You can pick a factor > 1.0 to brighten, or < 1.0 to darken
+            const float brightnessFactor = 1.2f; // ~20% brighter
+            color.x *= brightnessFactor;
+            color.y *= brightnessFactor;
+            color.z *= brightnessFactor;
+
+            // Optionally clamp to [0..255], or if you prefer [0..1] then just leave it.
+            // If your pipeline expects [0..1], skip the clamp below. If it expects [0..255], clamp.
+            // Here we assume [0..1] is expected, so we just clamp at 1.0:
+            if (color.x > 1f) color.x = 1f;
+            if (color.y > 1f) color.y = 1f;
+            if (color.z > 1f) color.z = 1f;
+            if (color.x < 0f) color.x = 0f;
+            if (color.y < 0f) color.y = 0f;
+            if (color.z < 0f) color.z = 0f;
+
+            // ---------------------------------------------------------------------
+            // 4) Write out in NCHW format (with optional BGR swap)
+            // ---------------------------------------------------------------------
+            int pixelIndex = y * outWidth + x;
             if (rgbSwapBgr == 0)
             {
-                float r = color.z;
-                float g = color.y;
-                float b = color.x;
-
-                // Write values in NCHW order:
-                // - Red channel at offset 0,
-                // - Green channel at offset totalPixels,
-                // - Blue channel at offset 2 * totalPixels.
-                int pixelIndex = y * outWidth + x;
-                output[pixelIndex] = r;
-                output[pixelIndex + totalPixels] = g;
-                output[pixelIndex + 2 * totalPixels] = b;
+                // R <- color.z, G <- color.y, B <- color.x
+                output[pixelIndex] = color.z;                      // R channel
+                output[pixelIndex + totalPixels] = color.y;        // G channel
+                output[pixelIndex + 2 * totalPixels] = color.x;    // B channel
             }
             else
             {
-                float r = color.x;
-                float g = color.y;
-                float b = color.z;
-
-                // Write values in NCHW order:
-                // - Red channel at offset 0,
-                // - Green channel at offset totalPixels,
-                // - Blue channel at offset 2 * totalPixels.
-                int pixelIndex = y * outWidth + x;
-                output[pixelIndex] = r;
-                output[pixelIndex + totalPixels] = g;
-                output[pixelIndex + 2 * totalPixels] = b;
+                // R <- color.x, G <- color.y, B <- color.z
+                output[pixelIndex] = color.x;
+                output[pixelIndex + totalPixels] = color.y;
+                output[pixelIndex + 2 * totalPixels] = color.z;
             }
-
         }
+
+        // -------------------------------------------------------------------------
+        // Helper function for Lanczos weight
+        // -------------------------------------------------------------------------
+        private static float LanczosWeight(float x, float a)
+        {
+            x = XMath.Abs(x);
+            if (x < 1e-6f)
+                return 1f;   // sin(0)/0 -> limit = 1
+            if (x >= a)
+                return 0f;   // Outside the lobes
+
+            float px = XMath.PI * x;
+            // ILGPU's XMath.Sin is used for sine
+            return (a * XMath.Sin(px) * XMath.Sin(px / a)) / (px * px);
+        }
+
 
         /// <summary>
         /// Writes an output image of size (colorWidth * 2) x (colorHeight).

@@ -46,6 +46,9 @@ namespace RGBDGenerator.Components
         // The asset handler that loads and processes actual images and frames
         private RGBDAssetHandler assetHandler;
 
+        private float depthCutoffFS = 0.98f;
+
+
         /// <summary>
         /// Constructor. Initializes the depth generator, asset handler, and sets up the custom RGBD shader.
         /// Also hooks the FileDrop event so we can drag-and-drop images or videos.
@@ -67,19 +70,97 @@ namespace RGBDGenerator.Components
                 layout (location = 0) in vec3 position;
                 layout (location = 1) in vec3 normal;
                 layout (location = 2) in vec2 texCoords;
-                out vec2 fragTexCoords;
+
+                out vec2 fragTexCoords; // Pass texture coords to fragment
+
                 uniform mat4 model;
                 uniform mat4 view;
                 uniform mat4 projection;
                 uniform sampler2D textureSampler;
                 uniform int mode;
+
+                // Depth-based displacement parameters
                 uniform float depthScale;
                 uniform float depthBias;
                 uniform float depthPower;
 
+                // ---------------------------------------------------------------------
+                // If your depth portion is on the right half of the texture, we map
+                // the original [0..1] range to [0.5..1.0]. For composite mode, etc.
+                // ---------------------------------------------------------------------
                 vec2 getDepthTexCoord(vec2 compTexCoord, int mode)
                 {
-                    // If in composite mode, the 'depth' portion may be on the right half
+                    if (mode == 2)
+                    {
+                        // composite: depth might be in the right half
+                        if (compTexCoord.x < 0.5)
+                            return vec2(compTexCoord.x + 0.5, compTexCoord.y);
+                        else
+                            return compTexCoord;
+                    }
+                    else
+                    {
+                        // normal: depth in right half
+                        return vec2(compTexCoord.x * 0.5 + 0.5, compTexCoord.y);
+                    }
+                }
+
+                vec2 getColorTexCoord(vec2 compTexCoord, int mode)
+                {
+                    if (mode == 0)
+                    {
+                        // color in the left half
+                        return vec2(compTexCoord.x * 0.5, compTexCoord.y);
+                    }
+                    else if (mode == 1)
+                    {
+                        // debug depth in the right half
+                        return vec2(compTexCoord.x * 0.5 + 0.5, compTexCoord.y);
+                    }
+                    else
+                    {
+                        // composite uses the full span
+                        return compTexCoord;
+                    }
+                }
+
+                void main()
+                {
+                    // 1) Read the raw depth from the portion of the texture that holds depth
+                    vec2 depthCoord = getDepthTexCoord(texCoords, mode);
+                    float rawDepth = texture(textureSampler, depthCoord).r;
+
+                    // 2) Apply displacement
+                    float adjustedDepth = pow(rawDepth, depthPower);
+                    float d = (1.0 - adjustedDepth) * depthScale - depthBias;
+                    vec3 displacedPos = position + normal * d;
+
+                    // 3) Standard MVP transform
+                    gl_Position = projection * view * model * vec4(displacedPos, 1.0);
+
+                    // 4) Pass color coords to the fragment stage
+                    fragTexCoords = getColorTexCoord(texCoords, mode);
+                }
+
+                ",
+
+                // Fragment shader
+                @"
+                #version 450 core
+                in vec2 fragTexCoords;
+                out vec4 FragColor;
+
+                uniform sampler2D textureSampler;
+                uniform int mode;
+
+                // We'll discard based on gradient above this threshold:
+                uniform float gradientCutoffFS;
+
+                // Size of the depth portion (width, height), used to compute texel offsets:
+                uniform vec2 depthTexSize;
+
+                vec2 getDepthTexCoord(vec2 compTexCoord, int mode)
+                {
                     if (mode == 2)
                     {
                         if (compTexCoord.x < 0.5)
@@ -89,63 +170,37 @@ namespace RGBDGenerator.Components
                     }
                     else
                     {
-                        // Standard remap: depth is assumed to be in the right half
+                        // color vs depth halves
                         return vec2(compTexCoord.x * 0.5 + 0.5, compTexCoord.y);
-                    }
-                }
-
-                vec2 getColorTexCoord(vec2 compTexCoord, int mode)
-                {
-                    if (mode == 0)
-                    {
-                        // Color in the left half
-                        return vec2(compTexCoord.x * 0.5, compTexCoord.y);
-                    }
-                    else if (mode == 1)
-                    {
-                        // Debug depth in the right half
-                        return vec2(compTexCoord.x * 0.5 + 0.5, compTexCoord.y);
-                    }
-                    else
-                    {
-                        // Composite uses the full span
-                        return compTexCoord;
                     }
                 }
 
                 void main()
                 {
-                    // Sample the raw depth from the portion of the texture that contains depth
-                    vec2 depthCoord = getDepthTexCoord(texCoords, mode);
-                    float rawDepth = texture(textureSampler, depthCoord).r;
+                    // 1) Find the depth texcoord in the right half (or entire) of the texture
+                    vec2 depthCoord = getDepthTexCoord(fragTexCoords, mode);
 
-                    // Non-linear emphasis
-                    float adjustedDepth = pow(rawDepth, depthPower);
+                    // 2) We do a small finite difference (center, right, up) to measure gradient
+                    vec2 pixelSize = 1.0 / depthTexSize;
+    
+                    float centerVal = texture(textureSampler, depthCoord).r;
+                    float rightVal  = texture(textureSampler, depthCoord + vec2(pixelSize.x, 0.0)).r;
+                    float upVal     = texture(textureSampler, depthCoord + vec2(0.0, pixelSize.y)).r;
 
-                    // Final displacement (1 - depth) to invert sense of nearer/farther
-                    float d = (1.0 - adjustedDepth) * depthScale - depthBias;
+                    float dx = rightVal - centerVal;
+                    float dy = upVal    - centerVal;
+                    float gradientMag = sqrt(dx*dx + dy*dy);
 
-                    // Displace vertices along the normal
-                    vec3 displacedPos = position + normal * d;
+                    // 3) If the gradient is too large, discard
+                    if (gradientMag > gradientCutoffFS)
+                    {
+                        discard;
+                    }
 
-                    gl_Position = projection * view * model * vec4(displacedPos, 1.0);
-
-                    // For the color portion, pick which half or which subset of the texture is used
-                    fragTexCoords = getColorTexCoord(texCoords, mode);
-                }
-                ",
-
-                // Fragment shader
-                @"
-                #version 330 core
-                in vec2 fragTexCoords;
-                out vec4 FragColor;
-                uniform sampler2D textureSampler;
-
-                void main()
-                {
+                    // 4) Otherwise, sample color from the usual coords
                     FragColor = texture(textureSampler, fragTexCoords);
                 }
+
                 "
             );
 
@@ -221,6 +276,18 @@ namespace RGBDGenerator.Components
             {
                 depthPower = Math.Max(0.1f, depthPower - deltaTime * 0.3f);
                 RGBDShader.SetUniform("depthPower", depthPower);
+            }
+
+            // Similarly for the fragment cutoff
+            if (keyboardState.IsKeyDown(Keys.Home))
+            {
+                depthCutoffFS += deltaTime * 0.2f;
+                RGBDShader.SetUniform("depthCutoffFS", depthCutoffFS);
+            }
+            if (keyboardState.IsKeyDown(Keys.End))
+            {
+                depthCutoffFS -= deltaTime * 0.2f;
+                RGBDShader.SetUniform("depthCutoffFS", depthCutoffFS);
             }
 
             // Toggle playback of a video
@@ -362,6 +429,11 @@ namespace RGBDGenerator.Components
                 mesh.Texture = texture;
                 mesh.shader = RGBDShader;
                 RGBDShader.SetUniform("mode", mode);
+
+                float depthW = texture.width / 2f;
+                float depthH = (float)texture.height;
+                RGBDShader.SetUniform("depthTexSize", new Vector2(depthW, depthH));
+                RGBDShader.SetUniform("depthCutoffFS", depthCutoffFS);
 
                 if (mode == 2)
                 {

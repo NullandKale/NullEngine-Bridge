@@ -107,7 +107,7 @@ namespace RGBDGenerator
             {
                 Filename = obj.FileNames[0];
                 string ext = System.IO.Path.GetExtension(Filename).ToLower();
-                isVideo = (ext == ".mp4" || ext == ".avi" || ext == ".mov");
+                isVideo = (ext == ".mp4" || ext == ".avi" || ext == ".mov" || ext == ".mkv");
                 usingCamera = false;
                 videoFinished = false;
                 UpdateDepthInferenceSize();
