@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "RGBDGenerator": {
+      "commandName": "Project",
+      "nativeDebugging": true
+    }
+  }
+}

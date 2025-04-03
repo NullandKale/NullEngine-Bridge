@@ -17,6 +17,25 @@ using NullEngine.Utils;
 
 namespace NullEngine
 {
+    public class OverrideRGBD
+    {
+        public Texture texture;
+        public int quiltRows;
+        public int quiltCols;
+        public int quiltWidth;
+        public int quiltHeight;
+        public float quiltAspect;
+    }
+
+    public class OverrideQuilt
+    {
+        // Mark these public if you want to set/read them directly:
+        public Texture texture;
+        public int quiltRows;
+        public int quiltCols;
+        public float quiltAspect;
+    }
+
     public class MainWindow : GameWindow
     {
         // Bridge Controller
@@ -27,6 +46,10 @@ namespace NullEngine
         // Framebuffers
         private Framebuffer primaryFramebuffer;
         private Framebuffer quiltFramebuffer;
+
+        // Two distinct overrides:
+        private OverrideRGBD overrideRGBD = null;
+        private OverrideQuilt overrideQuilt = null;
 
         // Variables for mouse control
         private bool isMiddleMouseCaptured = false;
@@ -43,7 +66,6 @@ namespace NullEngine
             })
         {
         }
-
 
         // Virtual methods to provide scenes and scene index
         protected virtual (string SceneFilePath, string ActiveSceneName)[] GetScenes()
@@ -66,10 +88,15 @@ namespace NullEngine
             ShaderManager.LoadShaders();
             MeshManager.LoadMeshes();
 
-            if (!Controller.Initialize("BridgeSDKSampleNative"))
+            if (!Controller.InitializeWithPath("BridgeSDKSampleNative", "C:\\Users\\alec\\source\\repos\\LookingGlassBridge\\out\\build\\x64-Debug"))
             {
                 Log.Debug("Failed to initialize bridge. Bridge may be missing, or the version may be too old");
             }
+
+            //if (!Controller.Initialize("BridgeSDKSampleNative"))
+            //{
+            //    Log.Debug("Failed to initialize bridge. Bridge may be missing, or the version may be too old");
+            //}
 
             List<DisplayInfo> displays = Controller.GetDisplayInfoList();
 
@@ -94,10 +121,9 @@ namespace NullEngine
                 quiltFramebuffer = new Framebuffer((int)bridgeData.QuiltWidth, (int)bridgeData.QuiltHeight);
             }
 
-            // Use the virtual methods to load scenes
+            // Load scenes
             (string SceneFilePath, string ActiveSceneName)[] scenes = GetScenes();
             int sceneIndex = GetSceneIndex();
-
             if (sceneIndex >= 0 && sceneIndex < scenes.Length)
             {
                 var sceneInfo = scenes[sceneIndex];
@@ -122,7 +148,6 @@ namespace NullEngine
                 Log.Debug($"Invalid scene index: {sceneIndex}. No matching scene configuration found.");
             }
 
-
             GL.Enable(EnableCap.Blend);
             GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
             GL.Enable(EnableCap.DepthTest);
@@ -134,7 +159,7 @@ namespace NullEngine
 
         private void MainWindow_FileDrop(FileDropEventArgs obj)
         {
-            
+            // ...
         }
 
         protected override void OnUpdateFrame(FrameEventArgs args)
@@ -170,18 +195,17 @@ namespace NullEngine
 
                 if (isMiddleMouseCaptured)
                 {
-                    // Capture the mouse
                     CursorState = CursorState.Grabbed;
                     Log.Debug("Middle mouse captured.");
                 }
                 else
                 {
-                    // Release the mouse
                     CursorState = CursorState.Normal;
                     Log.Debug("Middle mouse released.");
                 }
             }
 
+            // Screenshot test
             if (KeyboardState.IsKeyReleased(Keys.P))
             {
                 string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
@@ -190,10 +214,8 @@ namespace NullEngine
                 Log.Debug($"Captured screenshot: {filename}");
             }
 
-
+            // Keyboard + scene updates
             activeScene?.HandleKeyboardInput(KeyboardState, (float)args.Time);
-
-            // Update the scene
             activeScene?.Update((float)args.Time);
 
             // Update video textures
@@ -208,58 +230,103 @@ namespace NullEngine
 
             // Update window title with FPS stats
             Title = $"Null Engine | Last Frame Time: {fpsCounter.GetLastFrameTimeMs():0.00} ms | " +
-                           $"Avg FPS (1s): {fpsCounter.GetAverageFps1Sec():0.0} | " +
-                           $"Avg FPS (5s): {fpsCounter.GetAverageFps5Sec():0.0} | " +
-                           $"Min FPS: {fpsCounter.GetMinFps():0.0}";
+                    $"Avg FPS (1s): {fpsCounter.GetAverageFps1Sec():0.0} | " +
+                    $"Avg FPS (5s): {fpsCounter.GetAverageFps5Sec():0.0} | " +
+                    $"Min FPS: {fpsCounter.GetMinFps():0.0}";
 
-            // Render to the default framebuffer (primary window)
-            GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0); // Default framebuffer
+            // 1) Render to the primary window
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
             GL.Viewport(0, 0, Size.X, Size.Y);
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
-            // Render the active scene directly to the primary window
             Scene activeScene = SceneManager.GetActiveScene();
             activeScene?.Render();
 
             Context.SwapBuffers();
 
+            // 2) If Bridge is initialized, also render the quilt
             if (isBridgeDataInitialized)
             {
-                // Render to the quilt framebuffer
-                quiltFramebuffer.Bind();
-                GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-
-                int totalViews = bridgeData.Vx * bridgeData.Vy;
-                for (int y = 0; y < bridgeData.Vy; y++)
+                // 3) Choose whether to call DrawInteropRGBD or DrawInteropQuilt
+                //    If overrideRGBD is set, we do that first. If not, check overrideQuilt.
+                if (overrideRGBD != null && overrideRGBD.texture != null)
                 {
-                    for (int x = 0; x < bridgeData.Vx; x++)
-                    {
-                        int invertedY = (int)bridgeData.Vy - 1 - y;
-                        GL.Viewport(
-                            x * (int)bridgeData.ViewWidth,
-                            invertedY * (int)bridgeData.ViewHeight,
-                            (int)bridgeData.ViewWidth,
-                            (int)bridgeData.ViewHeight);
-
-                        int viewIndex = y * (int)bridgeData.Vx + x;
-                        float normalizedView = (float)viewIndex / (float)(totalViews - 1);
-                        activeScene?.Render(normalizedView, true);
-                    }
+                    // Use the Overridden RGBD texture
+                    Controller.DrawInteropRGBDTextureGL(
+                        bridgeData.Wnd,
+                        (ulong)overrideRGBD.texture.textureId,
+                        PixelFormats.RGBA,
+                        (uint)overrideRGBD.texture.width,
+                        (uint)overrideRGBD.texture.height,
+                        (uint)overrideRGBD.quiltWidth, 
+                        (uint)overrideRGBD.quiltHeight,
+                        (uint)overrideRGBD.quiltCols,   // layout in columns
+                        (uint)overrideRGBD.quiltRows,   // layout in rows
+                        bridgeData.DisplayAspect,       // aspect ratio for the final display
+                        activeScene.Focus * 0.05f,
+                        activeScene.Offset,
+                        1.0f, 2                            // zoom, depth position
+                    );
                 }
+                else if (overrideQuilt != null && overrideQuilt.texture != null)
+                {
+                    // Use an Overridden Quilt
+                    // We'll pull the actual texture size from overrideQuilt.texture.
+                    // If you store them separately, adjust as needed.
+                    uint texW = (uint)overrideQuilt.texture.width;
+                    uint texH = (uint)overrideQuilt.texture.height;
 
-                quiltFramebuffer.Unbind();
+                    Controller.DrawInteropQuiltTextureGL(
+                        bridgeData.Wnd,
+                        (ulong)overrideQuilt.texture.textureId,
+                        PixelFormats.RGBA,
+                        texW,
+                        texH,
+                        (uint)overrideQuilt.quiltCols,
+                        (uint)overrideQuilt.quiltRows,
+                        overrideQuilt.quiltAspect,
+                        1.0f
+                    );
+                }
+                else
+                {
+                    // Render the standard quilt (all views) into quiltFramebuffer
+                    quiltFramebuffer.Bind();
+                    GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
-                // Use the quilt framebuffer's texture for the Bridge SDK interop
-                Controller.DrawInteropQuiltTextureGL(
-                    bridgeData.Wnd,
-                    (ulong)quiltFramebuffer.TextureId,
-                    PixelFormats.RGBA,
-                    (uint)bridgeData.QuiltWidth,
-                    (uint)bridgeData.QuiltHeight,
-                    (uint)bridgeData.Vx,
-                    (uint)bridgeData.Vy,
-                    bridgeData.DisplayAspect,
-                    1.0f);
+                    int totalViews = bridgeData.Vx * bridgeData.Vy;
+                    for (int y = 0; y < bridgeData.Vy; y++)
+                    {
+                        for (int x = 0; x < bridgeData.Vx; x++)
+                        {
+                            int invertedY = (int)bridgeData.Vy - 1 - y;
+                            GL.Viewport(
+                                x * (int)bridgeData.ViewWidth,
+                                invertedY * (int)bridgeData.ViewHeight,
+                                (int)bridgeData.ViewWidth,
+                                (int)bridgeData.ViewHeight);
+
+                            int viewIndex = y * (int)bridgeData.Vx + x;
+                            float normalizedView = (float)viewIndex / (totalViews - 1);
+                            activeScene?.Render(normalizedView, true);
+                        }
+                    }
+
+                    quiltFramebuffer.Unbind();
+
+                    // No override; use the default quilt FBO
+                    Controller.DrawInteropQuiltTextureGL(
+                        bridgeData.Wnd,
+                        (ulong)quiltFramebuffer.TextureId,
+                        PixelFormats.RGBA,
+                        (uint)bridgeData.QuiltWidth,
+                        (uint)bridgeData.QuiltHeight,
+                        (uint)bridgeData.Vx,
+                        (uint)bridgeData.Vy,
+                        bridgeData.DisplayAspect,
+                        1.0f
+                    );
+                }
             }
 
             base.OnRenderFrame(args);
@@ -271,6 +338,76 @@ namespace NullEngine
             primaryFramebuffer?.Cleanup();
             quiltFramebuffer?.Cleanup();
             base.OnUnload();
+        }
+
+        // -------------------------------------------------------------------
+        //  Override setup methods
+        // -------------------------------------------------------------------
+
+        public void SetOverrideRGBD(Texture texture, float override_aspect = -1f)
+        {
+            if (bridgeData == null)
+            {
+                return;
+            }
+
+            overrideRGBD = new OverrideRGBD
+            {
+                texture = texture,
+                quiltWidth = bridgeData.QuiltWidth,
+                quiltHeight = bridgeData.QuiltHeight,
+                quiltRows = bridgeData.Vy,
+                quiltCols = bridgeData.Vx,
+                quiltAspect = override_aspect <= 0 ? texture.width / (float)texture.height : override_aspect,
+            };
+            // Clear out any quilt override so we don’t conflict
+            overrideQuilt = null;
+        }
+
+        /// <summary>
+        /// Override the quilt rendering with an RGBD “quilt.” 
+        /// (Calls DrawInteropRGBDTextureGL.)
+        /// </summary>
+        public void SetOverrideRGBD(Texture texture, int quiltWidth, int quiltHeight,
+                                     int quiltRows, int quiltCols, float aspect)
+        {
+            overrideRGBD = new OverrideRGBD
+            {
+                texture = texture,
+                quiltWidth = quiltWidth,
+                quiltHeight = quiltHeight,
+                quiltRows = quiltRows,
+                quiltCols = quiltCols,
+                quiltAspect = aspect
+            };
+            // Clear out any quilt override so we don’t conflict
+            overrideQuilt = null;
+        }
+
+        /// <summary>
+        /// Override the standard quilt with a custom quilt layout and texture.
+        /// (Calls DrawInteropQuiltTextureGL.)
+        /// </summary>
+        public void SetOverrideQuilt(Texture texture, int quiltRows, int quiltCols, float aspect)
+        {
+            overrideQuilt = new OverrideQuilt
+            {
+                texture = texture,
+                quiltRows = quiltRows,
+                quiltCols = quiltCols,
+                quiltAspect = aspect
+            };
+            // Clear out the RGBD override so we don’t conflict
+            overrideRGBD = null;
+        }
+
+        /// <summary>
+        /// Disables both overrides, returning to normal quilt rendering.
+        /// </summary>
+        public void ClearOverride()
+        {
+            overrideRGBD = null;
+            overrideQuilt = null;
         }
     }
 }

@@ -3,9 +3,9 @@ using System.Diagnostics;
 using System.Threading;
 using OpenCvSharp;
 
-namespace NullEngine.Utils
+namespace NullEngine.Video
 {
-    public class AsyncVideoReader : IDisposable
+    public class AsyncVideoReader : IFrameReader
     {
         private VideoCapture capture;
         private Thread frameReadThread;
@@ -175,7 +175,7 @@ namespace NullEngine.Utils
             }
         }
 
-        public IntPtr GetCurrentFramePtr()
+        public nint GetCurrentFramePtr()
         {
             lock (bufferLock)
             {

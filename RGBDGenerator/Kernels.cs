@@ -104,7 +104,7 @@ namespace GPU
             // ---------------------------------------------------------------------
             // 1) Lanczos3 Resize
             // ---------------------------------------------------------------------
-            float a = 3f; // number of lobes
+            float a = 2f; // number of lobes
             int centerX = (int)XMath.Floor(inX);
             int centerY = (int)XMath.Floor(inY);
 
@@ -148,7 +148,7 @@ namespace GPU
             //    We'll do a small 3x3 blur of the *same* region for the high-pass.
             //    Then:  color = color + sharpenStrength*(color - blurColor).
             // ---------------------------------------------------------------------
-            const float sharpenStrength = 0.3f;  // Adjust as desired
+            const float sharpenStrength = 0.2f;  // Adjust as desired
             {
                 float blurWeight = 0f;
                 Vec3 blurAccum = new Vec3(0f, 0f, 0f);
@@ -382,5 +382,45 @@ namespace GPU
             output[idx + totalPixels] = g; // Channel 1
             output[idx + 2 * totalPixels] = b; // Channel 2
         }
+
+        // -------------------------------------------------------------------------
+        // A simple TAA pass that blends current color into a persistent 'history'.
+        //   alpha close to 1.0 => puts more weight on the previous frame (very soft).
+        //   alpha close to 0.0 => basically no accumulation.
+        // -------------------------------------------------------------------------
+        public static void TemporalAA(
+            Index1D idx,
+            dImage current,
+            dImage history,
+            dImage output,
+            float alpha,
+            int tick)
+        {
+            int x = idx % current.width;
+            int y = idx / current.width;
+
+            // Read the current color
+            Vec3 c = current.GetColorAt(x, y).toVec3();
+
+            if(tick == 0)
+            {
+                output.SetColorAt(x, y, new RGBA32(c));
+            }
+
+            // Read the history color
+            Vec3 h = history.GetColorAt(x, y).toVec3();
+
+            // Weighted blend:
+            // out = alpha * h + (1-alpha) * c
+            float outR = alpha * h.x + (1 - alpha) * c.x;
+            float outG = alpha * h.y + (1 - alpha) * c.y;
+            float outB = alpha * h.z + (1 - alpha) * c.z;
+
+            RGBA32 outColor = new RGBA32(outB, outG, outR);
+
+            // Write updated color to 'output'
+            output.SetColorAt(x, y, outColor);
+        }
+
     }
 }

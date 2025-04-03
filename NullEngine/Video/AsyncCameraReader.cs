@@ -3,9 +3,9 @@ using System.Diagnostics;
 using System.Threading;
 using OpenCvSharp;
 
-namespace NullEngine.Utils
+namespace NullEngine.Video
 {
-    public class AsyncCameraReader : IDisposable
+    public class AsyncCameraReader : IFrameReader
     {
         private VideoCapture capture;
         private Thread frameReadThread;
@@ -23,8 +23,8 @@ namespace NullEngine.Utils
 
         // The camera index (e.g., 0 for default camera).
         public int CameraIndex { get; }
-        public int Width { get; }
-        public int Height { get; }
+        public int Width { get; private set; }
+        public int Height { get; private set; }
         public double Fps { get; }
 
         // When true, the reader only advances when PopFrame is called.
@@ -35,6 +35,14 @@ namespace NullEngine.Utils
         // For a live camera, EndOfVideo is generally false.
         public bool EndOfVideo { get; private set; } = false;
 
+        public bool HasLooped => false;
+
+        // If > 0, we will force the aspect ratio and resize the image.
+        private float forcedAspect;
+
+        /// <summary>
+        /// Original constructor (no forced aspect).
+        /// </summary>
         public AsyncCameraReader(int cameraIndex, bool singleFrameAdvance = false, bool useRGBA = false)
         {
             this.singleFrameAdvance = singleFrameAdvance;
@@ -68,6 +76,61 @@ namespace NullEngine.Utils
             frameReadThread.Start();
         }
 
+        /// <summary>
+        /// New constructor that optionally forces the aspect ratio of the output.
+        /// When forcedAspect > 0, we scale the frame to match that aspect ratio.
+        /// </summary>
+        public AsyncCameraReader(int cameraIndex, float forcedAspect, bool singleFrameAdvance = false, bool useRGBA = false)
+        {
+            this.singleFrameAdvance = singleFrameAdvance;
+            this.useRGBA = useRGBA;
+            this.forcedAspect = forcedAspect;
+            CameraIndex = cameraIndex;
+
+            // Open the camera device.
+            capture = new VideoCapture(cameraIndex, VideoCaptureAPIs.DSHOW);
+            if (!capture.IsOpened())
+                throw new ArgumentException($"Could not open camera with index: {cameraIndex}");
+
+            // Use the raw camera dimensions first.
+            int rawWidth = capture.FrameWidth;
+            int rawHeight = capture.FrameHeight;
+
+            // Use the reported FPS, or assume 30 if unavailable.
+            Fps = capture.Fps > 0 ? capture.Fps : 30;
+            frameIntervalMs = 1000.0 / Fps;
+
+            // If forcedAspect <= 0, behave exactly like the original constructor.
+            if (forcedAspect <= 0.0f)
+            {
+                Width = rawWidth;
+                Height = rawHeight;
+            }
+            else
+            {
+                // Force the new output width/height to keep the requested aspect:
+                // aspect = width / height  =>  height = width / aspect
+                // We'll keep the same camera width and force the height for simplicity.
+                Width = rawWidth;
+                Height = (int)(rawWidth / forcedAspect);
+            }
+
+            // Allocate double buffers with the desired Mat type at the forced resolution.
+            MatType matType = useRGBA ? MatType.CV_8UC4 : MatType.CV_8UC3;
+            frameMats[0] = new Mat(Height, Width, matType);
+            frameMats[1] = new Mat(Height, Width, matType);
+
+            if (singleFrameAdvance)
+            {
+                frameAdvanceEvent = new AutoResetEvent(false);
+                frameReadyEvent = new AutoResetEvent(false);
+            }
+
+            isRunning = true;
+            frameReadThread = new Thread(FrameReadLoop);
+            frameReadThread.Start();
+        }
+
         private void FrameReadLoop()
         {
             if (singleFrameAdvance)
@@ -75,7 +138,6 @@ namespace NullEngine.Utils
                 // Single-frame mode: wait for a signal to advance.
                 while (isRunning)
                 {
-                    // Wait until PopFrame signals to advance.
                     frameAdvanceEvent.WaitOne();
                     if (!isRunning)
                         break;
@@ -92,9 +154,14 @@ namespace NullEngine.Utils
                             continue;
                         }
 
+                        // If forcedAspect > 0, we resize to the forced resolution.
+                        if (forcedAspect > 0.0f)
+                        {
+                            Cv2.Resize(temp, temp, new Size(Width, Height));
+                        }
+
                         if (useRGBA)
                         {
-                            // Convert BGR to RGBA.
                             Cv2.CvtColor(temp, targetMat, ColorConversionCodes.BGR2RGBA);
                         }
                         else
@@ -132,6 +199,12 @@ namespace NullEngine.Utils
                             {
                                 // If reading fails, try again.
                                 continue;
+                            }
+
+                            // Resize if forced aspect is enabled.
+                            if (forcedAspect > 0.0f)
+                            {
+                                Cv2.Resize(temp, temp, new Size(Width, Height));
                             }
 
                             if (useRGBA)
@@ -177,7 +250,7 @@ namespace NullEngine.Utils
         /// <summary>
         /// Returns a pointer to the data of the current frame.
         /// </summary>
-        public IntPtr GetCurrentFramePtr()
+        public nint GetCurrentFramePtr()
         {
             lock (bufferLock)
             {
@@ -206,6 +279,11 @@ namespace NullEngine.Utils
             frameMats[1]?.Dispose();
             frameAdvanceEvent?.Dispose();
             frameReadyEvent?.Dispose();
+        }
+
+        public void Stop()
+        {
+            // do nothing for cameras
         }
     }
 }

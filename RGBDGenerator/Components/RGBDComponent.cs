@@ -1,4 +1,5 @@
 ﻿// Import GPU-related functionalities for parallel computing and image processing.
+using NullEngine;
 using NullEngine.Renderer.Components; // Integrate rendering components from the NullEngine framework
 using NullEngine.Renderer.Mesh; // Mesh data structures and transformations for rendering scenes
 using NullEngine.Renderer.Scenes; // Scene management components to handle camera and environment data
@@ -36,9 +37,9 @@ namespace RGBDGenerator.Components
         private bool manualAspectRatio = false;
 
         // --- Depth parameters for controlling the visual effect in the shader ---
-        private float depthScale = 1.0f;    // Controls overall depth effect strength
-        private float depthBias = 0.6f;     // Shifts the "zero" depth plane up or down
-        private float depthPower = 1.0f;    // Non-linear exponent for adjusting depth falloff
+        private float depthScale = 1.25f;    // Controls overall depth effect strength
+        private float depthBias = -0.1f;     // Shifts the "zero" depth plane up or down
+        private float depthPower = 0.5f;    // Non-linear exponent for adjusting depth falloff
 
         // For advanced usage: if we need to pause or play a loaded video
         private bool videoPlaying = true;
@@ -46,7 +47,7 @@ namespace RGBDGenerator.Components
         // The asset handler that loads and processes actual images and frames
         private RGBDAssetHandler assetHandler;
 
-        private float depthCutoffFS = 0.98f;
+        private float depthCutoffFS = 1f;
 
 
         /// <summary>
@@ -71,7 +72,8 @@ namespace RGBDGenerator.Components
                 layout (location = 1) in vec3 normal;
                 layout (location = 2) in vec2 texCoords;
 
-                out vec2 fragTexCoords; // Pass texture coords to fragment
+                out vec2 fragTexCoords;
+                out vec2 screenUV; 
 
                 uniform mat4 model;
                 uniform mat4 view;
@@ -129,7 +131,7 @@ namespace RGBDGenerator.Components
                     // 1) Read the raw depth from the portion of the texture that holds depth
                     vec2 depthCoord = getDepthTexCoord(texCoords, mode);
                     float rawDepth = texture(textureSampler, depthCoord).r;
-
+                    
                     // 2) Apply displacement
                     float adjustedDepth = pow(rawDepth, depthPower);
                     float d = (1.0 - adjustedDepth) * depthScale - depthBias;
@@ -140,23 +142,19 @@ namespace RGBDGenerator.Components
 
                     // 4) Pass color coords to the fragment stage
                     fragTexCoords = getColorTexCoord(texCoords, mode);
+                    screenUV = texCoords;
                 }
 
                 ",
-
-                // Fragment shader
                 @"
                 #version 450 core
                 in vec2 fragTexCoords;
+                in vec2 screenUV;
                 out vec4 FragColor;
 
                 uniform sampler2D textureSampler;
                 uniform int mode;
-
-                // We'll discard based on gradient above this threshold:
-                uniform float gradientCutoffFS;
-
-                // Size of the depth portion (width, height), used to compute texel offsets:
+                uniform float depthCutoffFS;
                 uniform vec2 depthTexSize;
 
                 vec2 getDepthTexCoord(vec2 compTexCoord, int mode)
@@ -170,37 +168,45 @@ namespace RGBDGenerator.Components
                     }
                     else
                     {
-                        // color vs depth halves
                         return vec2(compTexCoord.x * 0.5 + 0.5, compTexCoord.y);
                     }
                 }
 
                 void main()
                 {
-                    // 1) Find the depth texcoord in the right half (or entire) of the texture
-                    vec2 depthCoord = getDepthTexCoord(fragTexCoords, mode);
-
-                    // 2) We do a small finite difference (center, right, up) to measure gradient
+                    // 1) Locate the depth texcoord on the right half (or entire area) of the texture
+                    vec2 depthCoord = getDepthTexCoord(screenUV, mode);
                     vec2 pixelSize = 1.0 / depthTexSize;
-    
+
+                    // 2) Center depth value
                     float centerVal = texture(textureSampler, depthCoord).r;
-                    float rightVal  = texture(textureSampler, depthCoord + vec2(pixelSize.x, 0.0)).r;
-                    float upVal     = texture(textureSampler, depthCoord + vec2(0.0, pixelSize.y)).r;
 
-                    float dx = rightVal - centerVal;
-                    float dy = upVal    - centerVal;
-                    float gradientMag = sqrt(dx*dx + dy*dy);
+                    // 3) Sample a 3×3 block around centerVal to compute average difference
+                    float sumDiff = 0.0;
+                    float count   = 0.0;
 
-                    // 3) If the gradient is too large, discard
-                    if (gradientMag > gradientCutoffFS)
+                    for (int j = -1; j <= 1; j++)
+                    {
+                        for (int i = -1; i <= 1; i++)
+                        {
+                            vec2 offset = vec2(i, j) * pixelSize;
+                            float neighborVal = texture(textureSampler, depthCoord + offset).r;
+                            sumDiff += abs(neighborVal - centerVal);
+                            count   += 1.0;
+                        }
+                    }
+
+                    float avgDiff = sumDiff / count;
+
+                    // 4) Discard if the average difference around centerVal exceeds our cutoff
+                    if (avgDiff > depthCutoffFS)
                     {
                         discard;
                     }
 
-                    // 4) Otherwise, sample color from the usual coords
+                    // 5) Otherwise, draw the usual color from the left half or the composite
                     FragColor = texture(textureSampler, fragTexCoords);
                 }
-
                 "
             );
 
@@ -266,6 +272,11 @@ namespace RGBDGenerator.Components
                 RGBDShader.SetUniform("depthBias", depthBias);
             }
 
+            if (keyboardState.IsKeyDown(Keys.S))
+            {
+                assetHandler.SaveScreenshot();
+            }
+
             // Adjust depth power with U/J
             if (keyboardState.IsKeyDown(Keys.U))
             {
@@ -281,12 +292,12 @@ namespace RGBDGenerator.Components
             // Similarly for the fragment cutoff
             if (keyboardState.IsKeyDown(Keys.Home))
             {
-                depthCutoffFS += deltaTime * 0.2f;
+                depthCutoffFS += deltaTime * 0.02f;
                 RGBDShader.SetUniform("depthCutoffFS", depthCutoffFS);
             }
             if (keyboardState.IsKeyDown(Keys.End))
             {
-                depthCutoffFS -= deltaTime * 0.2f;
+                depthCutoffFS -= deltaTime * 0.02f;
                 RGBDShader.SetUniform("depthCutoffFS", depthCutoffFS);
             }
 
@@ -294,9 +305,16 @@ namespace RGBDGenerator.Components
             // (The asset handler doesn't directly handle pause/resume, but you can add if needed.)
             if (!assetHandler.usingCamera && keyboardState.IsKeyPressed(Keys.Space))
             {
-                // Example placeholder for toggling videoPlaying state
-                videoPlaying = !videoPlaying;
-                // If using your custom videoReader, you can call .Pause() or .Play() on it here
+                //if(videoPlaying)
+                //{
+                //    assetHandler.videoReader.Pause();
+                //    videoPlaying = false;
+                //}
+                //else
+                //{
+                //    assetHandler.videoReader.Play();
+                //    videoPlaying = true;
+                //}
             }
 
             // Key R could restart the video if integrated fully with AsyncVideoReader (omitted for brevity)
@@ -407,6 +425,7 @@ namespace RGBDGenerator.Components
             // Implementation omitted - can be used for object rotation, dragging, etc.
         }
 
+
         /// <summary>
         /// Per-frame update routine. Retrieves the latest texture from the asset handler
         /// (whether from static image, video, or camera), updates the mesh, and configures
@@ -417,8 +436,10 @@ namespace RGBDGenerator.Components
             Texture newTexture = assetHandler.GetLatestTexture();
             if (newTexture != null)
             {
-                // Dispose the old texture to free GPU memory
-                if (texture != null) texture.Dispose();
+                if (texture != null && texture.textureId != newTexture.textureId)
+                {
+                    texture.Dispose();
+                }
                 texture = newTexture;
             }
 
@@ -450,6 +471,7 @@ namespace RGBDGenerator.Components
                         aspectRatioOverride = computedAspectRatio;
                     }
                     mesh.Transform.Scale = new Vector3(aspectRatioOverride, 1, 1);
+                    Program.window.SetOverrideRGBD(texture, aspectRatioOverride);
                 }
             }
         }

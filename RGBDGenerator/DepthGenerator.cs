@@ -17,6 +17,8 @@ namespace LKG_NVIDIA_RAYS.Utils
 {
     public sealed class DepthGenerator : IDisposable
     {
+        public GPUImage? historyFrame;
+
         public Context context;
         public Accelerator device;
         public Action<Index1D, dImage, ArrayView<float>, int, int, float, int> imageToRGBFloatsKernel;
@@ -25,6 +27,7 @@ namespace LKG_NVIDIA_RAYS.Utils
         public Action<Index1D, ArrayView<float>, int, int, ArrayView<int>> AnalyzeDepthKernel;
         public Action<Index1D, ArrayView<float>, float, float, ArrayView<float>> RemapDepthKernel;
         public Action<Index1D, ArrayView<int>, ArrayView<float>> FindFocusDepthKernel;
+        public Action<Index1D, dImage, dImage, dImage, float, int> temporalAAKernel;
 
         private readonly InferenceSession _session;
         private int _targetWidth;
@@ -38,11 +41,15 @@ namespace LKG_NVIDIA_RAYS.Utils
         private float[]? depthFloats;
         private GPUImage? reusableOutImage;
         public DepthRollingWindow? rollingWindow;
+        
+
+        private int frameCount = 0;
 
         public MemoryBuffer1D<int, Stride1D.Dense> DepthHistogram;
         public MemoryBuffer1D<float, Stride1D.Dense> FocusResult;
         public MemoryBuffer1D<float, Stride1D.Dense> DepthMinMax;
         public MemoryBuffer1D<float, Stride1D.Dense> FaceBoxesBuffer;
+
 
         // Auto-focus properties
         public bool AutoFocusEnabled { get; set; }
@@ -72,13 +79,13 @@ namespace LKG_NVIDIA_RAYS.Utils
                 .Math(MathMode.Fast32BitOnly)
                 .Inlining(InliningMode.Aggressive)
                 .AutoAssertions()
-                .Optimize(OptimizationLevel.O1));
+                .Optimize(OptimizationLevel.O2));
             device = context.GetPreferredDevice(preferCPU: debug).CreateAccelerator(context);
 
             imageToRGBFloatsKernel = device.LoadAutoGroupedStreamKernel<Index1D, dImage, ArrayView<float>, int, int, float, int>(Kernels.ImageToRGBFloats);
             depthFloatsToBGRAImageKernel = device.LoadAutoGroupedStreamKernel<Index1D, ArrayView<float>, dImage, dImage, int, int, float, float, int>(Kernels.DepthFloatsToBGRAImageFull);
             filterDepthRollingWindowKernel = device.LoadAutoGroupedStreamKernel<Index1D, dDepthRollingWindow, ArrayView<float>>(Kernels.FilterDepthRollingWindow);
-
+            temporalAAKernel = device.LoadAutoGroupedStreamKernel<Index1D, dImage, dImage, dImage, float, int>(Kernels.TemporalAA);
             _targetWidth = adjustedSize;
             _targetHeight = adjustedSize;
             border = 0.0f;
@@ -107,7 +114,7 @@ namespace LKG_NVIDIA_RAYS.Utils
             // If a face model path was provided, initialize the face detector
             if (!string.IsNullOrEmpty(faceModelPath))
             {
-                _faceDetector = new FaceDetector(faceModelPath, device);
+                //_faceDetector = new FaceDetector(faceModelPath, device);
             }
         }
 
@@ -226,7 +233,7 @@ namespace LKG_NVIDIA_RAYS.Utils
             depthFloatBuffer.CopyToCPU(depthFloats);
         }
 
-        public GPUImage ComputeDepth(GPUImage inputImage, bool RGBSwapBGR = false, bool detectFaces = false)
+        public GPUImage ComputeDepth(GPUImage inputImage, float taa = 0.15f, bool RGBSwapBGR = false, bool detectFaces = false)
         {
             dImage inputImageGPU = inputImage.toDevice(device);
 
@@ -299,6 +306,15 @@ namespace LKG_NVIDIA_RAYS.Utils
                 reusableOutImage = new GPUImage(outWidth, outHeight);
             }
 
+
+            if (historyFrame == null ||
+                historyFrame.width != outWidth ||
+                historyFrame.height != outHeight)
+            {
+                historyFrame?.Dispose();
+                historyFrame = new GPUImage(outWidth, outHeight);
+            }
+
             if (depthFloatBuffer == null || depthFloatBuffer.Length < totalPixels)
             {
                 depthFloatBuffer?.Dispose();
@@ -331,7 +347,7 @@ namespace LKG_NVIDIA_RAYS.Utils
             depthFloatsToBGRAImageKernel(
                 outWidth * outHeight,
                 depthFloatBuffer.View,
-                inputImage.toDevice(device),
+                inputImageGPU,
                 reusableOutImage.toDevice(device),
                 _targetWidth,
                 _targetHeight,
@@ -340,7 +356,19 @@ namespace LKG_NVIDIA_RAYS.Utils
                 RGBSwapBGR ? 1 : 0);
             device.Synchronize();
 
-            return reusableOutImage;
+            // Now run our TAA kernel to blend new frame => into the history
+            int totalColorPixels = outWidth * outHeight;
+            temporalAAKernel(
+                totalColorPixels,
+                reusableOutImage.toDevice(device),          // current color
+                historyFrame.toDevice(device), // old history
+                historyFrame.toDevice(device), // output overwrites the old history
+                taa,
+                frameCount);
+            device.Synchronize();
+            frameCount++;
+
+            return historyFrame;
         }
 
         public void Dispose()

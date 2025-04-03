@@ -200,7 +200,7 @@ namespace BridgeSDK
 
     public partial class Controller
     {
-        public const string BridgeVersion = "2.5.1";
+        public const string BridgeVersion = "2.5.2";
 
         public static void PopulateWindowValues(BridgeWindowData bridgeData, Window wnd)
         {
@@ -217,7 +217,7 @@ namespace BridgeSDK
             GetFringe(wnd, ref bridgeData.Fringe);
             GetSubp(wnd, ref bridgeData.Subp);
             GetPitch(wnd, ref bridgeData.Pitch);
-            GetCenter(wnd, ref bridgeData.Center);
+            GetCenter(wnd, ref bridgeData.Center);  
             GetWindowPosition(wnd, ref bridgeData.WindowPosition.X, ref bridgeData.WindowPosition.Y);
         }
 
@@ -557,6 +557,7 @@ namespace BridgeSDK
         private delegate bool GetMaxTextureSizeDelegate(Window wnd, ref uint width);
         private delegate bool SetInteropQuiltTextureGLDelegate(Window wnd, ulong texture, PixelFormats format, uint width, uint height, uint vx, uint vy, float aspect, float zoom);
         private delegate bool DrawInteropQuiltTextureGLDelegate(Window wnd, ulong texture, PixelFormats format, uint width, uint height, uint vx, uint vy, float aspect, float zoom);
+        private delegate bool DrawInteropRGBDTextureGLDelegate(Window wnd, ulong texture, PixelFormats format, uint width, uint height, uint quiltWidth, uint quiltHeight, uint vx, uint vy, float aspect, float focus, float offset, float zoom, int depth_loc);
         private delegate bool SaveTextureToFileGLDelegateUTF16(Window wnd, [MarshalAs(UnmanagedType.LPWStr)] string filename, ulong texture, PixelFormats format, uint width, uint height);
         private delegate bool SaveTextureToFileGLDelegateUTF8(Window wnd, [MarshalAs(UnmanagedType.LPUTF8Str)] string filename, ulong texture, PixelFormats format, uint width, uint height);
         private delegate bool InstanceWindowMetalDelegate(IntPtr metal_device, ref Window windowHandle, uint headIndex);
@@ -784,6 +785,20 @@ namespace BridgeSDK
             {
                 var func = DynamicLibraryLoader.LoadFunction<DrawInteropQuiltTextureGLDelegate>(libraryPath, "draw_interop_quilt_texture_gl");
                 return func(wnd, texture, format, width, height, vx, vy, aspect, zoom);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Error: " + ex.Message);
+                return false;
+            }
+        }
+
+        public static bool DrawInteropRGBDTextureGL(Window wnd, ulong texture, PixelFormats format, uint width, uint height, uint quiltWidth, uint quiltHeight, uint vx, uint vy, float aspect, float focus, float offset, float zoom, int depth_loc)
+        {
+            try
+            {
+                var func = DynamicLibraryLoader.LoadFunction<DrawInteropRGBDTextureGLDelegate>(libraryPath, "draw_interop_rgbd_texture_gl");
+                return func(wnd, texture, format, width, height, quiltWidth, quiltHeight, vx, vy, aspect, focus, offset, zoom, depth_loc);
             }
             catch (Exception ex)
             {

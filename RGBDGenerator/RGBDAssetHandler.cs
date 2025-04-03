@@ -3,6 +3,7 @@ using GPU; // Leverage GPU resources for heavy computations
 using LKG_NVIDIA_RAYS.Utils; // Include utilities specific to NVIDIA ray tracing implementations
 using NullEngine.Renderer.Textures; // Texture classes for dynamic texture creation and binding
 using NullEngine.Utils; // General utility functions from the NullEngine codebase
+using NullEngine.Video;
 using OpenTK.Windowing.Common; // For events like FileDropEventArgs
 using System.Diagnostics; // Diagnostics utilities for performance measurement (e.g., Stopwatch)
 using System.Drawing; // Provides basic graphics functionality, e.g., Bitmap class for image processing
@@ -34,11 +35,8 @@ namespace RGBDGenerator
         // Indicates that the video file has reached its end, so further frame processing is suspended.
         public bool videoFinished = false;
 
-        // Reads frames sequentially from a video file; supports both automatic and single-frame modes.
-        private AsyncVideoReader videoReader = null;
-
-        // Reads frames from a connected camera device.
-        private AsyncCameraReader cameraReader = null;
+        // Instead of separate video and camera readers, use the common interface.
+        private IFrameReader frameReader = null;
 
         // When recording is enabled, this writes each processed frame to disk.
         private VideoWriter videoWriter = null;
@@ -54,12 +52,14 @@ namespace RGBDGenerator
 
         // Constants representing different inference resolutions for different input modes.
         private const int imageInferenceSize = 1024;          // Resolution used for static images
-        private const int videoRealTimeInferenceSize = 512;   // Lower resolution for real-time video
-        private const int videoRecordInferenceSize = 1280;    // Higher resolution for recording from file inputs
+        private const int videoRealTimeInferenceSize = 518;     // Lower resolution for real-time video
+        private const int videoRecordInferenceSize = 518;      // Higher resolution for recording from file inputs
 
         // Keeps track of the last processed static image file, so we can skip reprocessing if it doesn't change.
         private string lastProcessedFilename;
         private Texture lastProcessedTexture;
+
+        public int loadedCount = 0;
 
         /// <summary>
         /// Constructs the asset handler by initializing the DepthGenerator
@@ -69,20 +69,10 @@ namespace RGBDGenerator
         public RGBDAssetHandler(string Filename)
         {
             this.Filename = Filename;
-
             // By default, use the high-res setting for static images.
             int inferenceSize = imageInferenceSize;
-
             // Initialize the depth generator using a specific ONNX model.
-            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small_fp16.onnx");
-            depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small.onnx", "Assets/ultraface-version-RFB-320.onnx");
-            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-base_q4f16.onnx");
-            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-base_fp16.onnx");
-            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-base.onnx");
-            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large_q4f16.onnx");
-            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large_q4.onnx");
-            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large_fp16.onnx");
-            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large.onnx");
+            depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small.onnx");
         }
 
         /// <summary>
@@ -103,14 +93,17 @@ namespace RGBDGenerator
         /// <param name="obj">FileDropEventArgs containing the dropped filenames.</param>
         private void FileDrop(FileDropEventArgs obj)
         {
-            if (obj.FileNames.Length > 0 && File.Exists(obj.FileNames[0]))
+            if (obj.FileNames.Length > 0 && System.IO.File.Exists(obj.FileNames[0]))
             {
+                DisposeCurrentStream();
+
                 Filename = obj.FileNames[0];
                 string ext = System.IO.Path.GetExtension(Filename).ToLower();
                 isVideo = (ext == ".mp4" || ext == ".avi" || ext == ".mov" || ext == ".mkv");
                 usingCamera = false;
                 videoFinished = false;
                 UpdateDepthInferenceSize();
+                loadedCount++;
             }
         }
 
@@ -144,15 +137,11 @@ namespace RGBDGenerator
         /// </summary>
         public void DisposeCurrentStream()
         {
-            if (videoReader != null)
+            if (frameReader != null)
             {
-                videoReader.Dispose();
-                videoReader = null;
-            }
-            if (cameraReader != null)
-            {
-                cameraReader.Dispose();
-                cameraReader = null;
+                frameReader.Stop();
+                frameReader.Dispose();
+                frameReader = null;
             }
             if (videoWriter != null)
             {
@@ -184,7 +173,7 @@ namespace RGBDGenerator
             if (GPUImage.TryLoad(Filename, out GPUImage loadedImage))
             {
                 Stopwatch stopwatch = Stopwatch.StartNew();
-                GPUImage output = depthGenerator.ComputeDepth(loadedImage, true);
+                GPUImage output = depthGenerator.ComputeDepth(loadedImage, 0.1f, true);
                 stopwatch.Stop();
 
                 loadedImage.Dispose();
@@ -213,6 +202,20 @@ namespace RGBDGenerator
             return null;
         }
 
+        public void SaveScreenshot()
+        {
+            if (depthGenerator.historyFrame == null)
+            {
+                Console.WriteLine("No final RGBD image available to save. 'historyFrame' is null.");
+                return;
+            }
+
+            string baseName = System.IO.Path.GetFileNameWithoutExtension(Filename);
+            string outName = $"screenshot_{baseName}_{System.DateTime.Now:yyyyMMdd_HHmmss}.png";
+
+            depthGenerator.historyFrame.GetBitmap().Save(outName);
+        }
+
         /// <summary>
         /// Converts raw video/camera frame data to an RGBD image via the DepthGenerator and returns GPUImage data.
         /// </summary>
@@ -233,7 +236,7 @@ namespace RGBDGenerator
                 tempVideoFrame.fromCPU_UNSAFE(rgbaData);
             }
             // The second parameter (cameraRecording) can adjust internal filters in some depth generator pipelines
-            GPUImage output = depthGenerator.ComputeDepth(tempVideoFrame, cameraRecording);
+            GPUImage output = depthGenerator.ComputeDepth(tempVideoFrame, 0.1f, cameraRecording);
             output.toCPU(); // Transfer to CPU memory for subsequent operations
             return output;
         }
@@ -254,70 +257,57 @@ namespace RGBDGenerator
         /// <summary>
         /// Updates video or camera streams by grabbing the next frame, running depth inference,
         /// and producing a new texture. If recording is active, frames are also written to disk.
-        /// Only relevant if isVideo=true or usingCamera=true.
+        /// Only relevant if isVideo==true or usingCamera==true.
         /// </summary>
         /// <returns>A newly created Texture with RGBD information, or null if no frame is available.</returns>
         public Texture UpdateVideoFrame()
         {
             if (videoFinished && !usingCamera) return null;
 
-            // If we haven't yet opened a video reader (and it's a valid video file), do so
-            if (!usingCamera && videoReader == null && System.IO.File.Exists(Filename))
+            // If we haven't yet opened a reader for a video file, do so.
+            if (!usingCamera && frameReader == null && System.IO.File.Exists(Filename))
             {
-                videoReader = new AsyncVideoReader(Filename, false, true);
+                frameReader = new AsyncFfmpegVideoReader(Filename, false, true);
             }
 
-            // Pull the next frame from camera or video
-            if (usingCamera && cameraReader != null)
+            // Signal the reader to advance to the next frame.
+            if (frameReader != null)
             {
-                cameraReader.PopFrame();
-            }
-            else if (videoReader != null)
-            {
-                videoReader.PopFrame();
-            }
-
-            // Acquire the frame data pointer and dimensions
-            System.IntPtr framePtr;
-            int width, height;
-            if (usingCamera && cameraReader != null)
-            {
-                framePtr = cameraReader.GetCurrentFramePtr();
-                width = cameraReader.Width;
-                height = cameraReader.Height;
-            }
-            else if (videoReader != null)
-            {
-                framePtr = videoReader.GetCurrentFramePtr();
-                width = videoReader.Width;
-                height = videoReader.Height;
+                frameReader.PopFrame();
             }
             else
             {
-                return null; // No valid frame source
+                return null; // No valid frame source.
             }
 
-            // Convert the raw RGB frame to an RGBD GPUImage
+            // Acquire the frame data pointer and dimensions.
+            System.IntPtr framePtr = frameReader.GetCurrentFramePtr();
+            int width = frameReader.Width;
+            int height = frameReader.Height;
+
+            // Convert the raw RGB frame to an RGBD GPUImage.
             GPUImage rgbdFrame = GenerateRGBDImageFromRGBBitmap(width, height, framePtr);
 
-            // Write out the frame if we're recording
+            // Write out the frame if we're recording.
             if (videoWriter != null)
             {
                 videoWriter.WriteFrame(rgbdFrame.data);
             }
 
-            // Create a new GPU Texture from the data
+            // Create a new GPU Texture from the data.
             Texture newTexture = new Texture("RGBD", rgbdFrame.data, rgbdFrame.width, rgbdFrame.height, !usingCamera);
             rgbdFrame.Dispose();
 
-            // If we've looped the video during recording, we might want to reinit the video
-            if (!usingCamera && videoWriter != null && videoReader != null && videoReader.HasLooped)
+            // If we've looped the video during recording, reinitialize the video reader.
+            if (!usingCamera && videoWriter != null && frameReader != null && frameReader.HasLooped)
             {
                 videoWriter.Dispose();
                 videoWriter = null;
 
-                videoReader.Dispose();
-                videoReader = new AsyncVideoReader(Filename, false, true);
+                frameReader.Stop();
+                frameReader.Dispose();
+                frameReader = new AsyncFfmpegVideoReader(Filename, false, true);
+                UpdateDepthInferenceSize();
             }
 
             return newTexture;
@@ -333,17 +323,17 @@ namespace RGBDGenerator
         /// </summary>
         public Texture GetLatestTexture()
         {
-            // If using a camera or video, update from their streams
+            // For camera or video input, update from the frame reader.
             if (isVideo || usingCamera)
             {
                 return UpdateVideoFrame();
             }
             else
             {
-                // Static image logic
+                // Static image logic.
                 Texture tex = LoadTextureFromImage(skipFirstSave);
-                // After the first successful load, we clear the skip-flag for subsequent calls
-                if (skipFirstSave) skipFirstSave = false;
+                if (skipFirstSave)
+                    skipFirstSave = false;
                 return tex;
             }
         }
@@ -359,9 +349,9 @@ namespace RGBDGenerator
 
             try
             {
-                cameraReader = new AsyncCameraReader(cameraIndex, true, true);
+                frameReader = new AsyncCameraReader(cameraIndex, 1.77f, true, true);
             }
-            catch (Exception ex)
+            catch (System.Exception ex)
             {
                 Console.WriteLine(ex.Message);
                 return;
@@ -378,14 +368,14 @@ namespace RGBDGenerator
         /// </summary>
         public void ToggleRecording()
         {
-            // Live camera scenario
-            if (usingCamera && cameraReader != null)
+            // Live camera scenario.
+            if (usingCamera && frameReader != null)
             {
                 cameraRecording = !cameraRecording;
                 if (cameraRecording)
                 {
                     string outputFilename = "output_camera_" + System.DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".mp4";
-                    videoWriter = new VideoWriter(outputFilename, cameraReader.Fps, cameraReader.Width * 2, cameraReader.Height);
+                    videoWriter = new VideoWriter(outputFilename, frameReader.Fps, frameReader.Width * 2, frameReader.Height);
                 }
                 else
                 {
@@ -394,12 +384,13 @@ namespace RGBDGenerator
                 }
                 UpdateDepthInferenceSize();
             }
-            // Video file scenario
-            else if (!usingCamera && videoReader != null)
+            // Video file scenario.
+            else if (!usingCamera && frameReader != null)
             {
-                videoReader.Stop();
-                videoReader.Dispose();
-                videoReader = new AsyncVideoReader(Filename, true, true); // Reopen in recording mode
+                frameReader.Stop();
+                frameReader.Dispose();
+                // Reopen in recording mode.
+                frameReader = new AsyncFfmpegVideoReader(Filename, true, true, false);
 
                 if (videoWriter != null)
                 {
@@ -409,7 +400,7 @@ namespace RGBDGenerator
                 else
                 {
                     string outputFilename = "output_" + System.IO.Path.GetFileName(Filename);
-                    videoWriter = new VideoWriter(outputFilename, videoReader.Fps, videoReader.Width * 2, videoReader.Height);
+                    videoWriter = new VideoWriter(outputFilename, frameReader.Fps, frameReader.Width * 2, frameReader.Height);
                 }
                 UpdateDepthInferenceSize();
             }

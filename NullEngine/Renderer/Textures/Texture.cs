@@ -7,11 +7,11 @@ namespace NullEngine.Renderer.Textures
     public class Texture : IDisposable
     {
         public string Name;
-        protected int textureId;
+        public int textureId;
         public int width;
         public int height;
 
-        public Texture(string name, string filePath, bool generateMipmaps = true)
+        public Texture(string name, string filePath, bool generateMipmaps = false)
         {
             Name = name;
             textureId = GL.GenTexture();
@@ -73,7 +73,7 @@ namespace NullEngine.Renderer.Textures
         // New constructor: creates a texture from a pointer to raw image data.
         // The data is assumed to be in BGRA format (8 bits per channel).
         // The pointer is copied into the texture, so it does not need to remain valid afterwards.
-        public Texture(string name, IntPtr data, int width, int height, bool swapRB = false, bool generateMipmaps = true)
+        public Texture(string name, IntPtr data, int width, int height, bool swapRB = false, bool generateMipmaps = false)
         {
             Name = name;
             textureId = GL.GenTexture();
@@ -109,7 +109,7 @@ namespace NullEngine.Renderer.Textures
             GL.BindTexture(TextureTarget.Texture2D, 0);
         }
 
-        public Texture(string name, int[] data, int width, int height, bool swapRB = false, bool generateMipmaps = true)
+        public Texture(string name, int[] data, int width, int height, bool swapRB = false, bool generateMipmaps = false)
         {
             Name = name;
             textureId = GL.GenTexture();

@@ -1,5 +1,5 @@
 ﻿using System;
-using NullEngine.Utils;
+using NullEngine.Video;
 using OpenTK.Graphics.OpenGL;
 
 namespace NullEngine.Renderer.Textures

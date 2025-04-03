@@ -39,7 +39,7 @@ namespace GPU
         /// - Lower values (1.0-3.0): More edges detected, preserving more edge details and reducing ghosting.
         /// Reasonable range: 1.0-10.0
         /// </summary>
-        public float EdgeThreshold { get; set; } = 5.0f;
+        public float EdgeThreshold { get; set; } = 2.0f;
 
         /// <summary>
         /// Controls how much depth change between frames is considered motion.
@@ -47,7 +47,7 @@ namespace GPU
         /// - Lower values (1.0-3.0): More sensitive to motion, less ghosting but more flicker may remain.
         /// Reasonable range: 1.0-8.0
         /// </summary>
-        public float MotionThreshold { get; set; } = 5.0f;
+        public float MotionThreshold { get; set; } = 8.0f;
 
         /// <summary>
         /// Controls how quickly older frames lose influence.
@@ -55,7 +55,7 @@ namespace GPU
         /// - Lower values (1.0-2.0): Rapid falloff, recent frames dominate the filtering result.
         /// Reasonable range: 1.0-5.0 (in frames)
         /// </summary>
-        public float TemporalDecay { get; set; } = 6.5f;
+        public float TemporalDecay { get; set; } = 20f;
 
         /// <summary>
         /// Defines when two depth values are considered similar enough for direct blending.
@@ -63,7 +63,7 @@ namespace GPU
         /// - Lower values (0.5-1.5): Stricter matching, less ghosting but potential flicker.
         /// Reasonable range: 0.5-5.0
         /// </summary>
-        public float SimilarityDelta { get; set; } = 2.0f;
+        public float SimilarityDelta { get; set; } = 5.0f;
 
         /// <summary>
         /// Controls falloff for depth differences beyond SimilarityDelta.
@@ -71,15 +71,7 @@ namespace GPU
         /// - Lower values (1.0-3.0): Steep falloff, sharp separation between different depths.
         /// Reasonable range: 1.0-10.0
         /// </summary>
-        public float SimilaritySigma { get; set; } = 3.0f;
-
-        /// <summary>
-        /// Controls how much temporal variance triggers fallback to current frame.
-        /// - Higher values (3.0-5.0): More temporal filtering even with high variance.
-        /// - Lower values (0.5-1.5): Quickly revert to current frame when variance is detected.
-        /// Reasonable range: 0.5-5.0
-        /// </summary>
-        public float VarianceThreshold { get; set; } = 2.5f;
+        public float SimilaritySigma { get; set; } = 8.0f;
 
         /// <summary>
         /// Defines the size of the spatial neighborhood for sampling.
@@ -87,7 +79,7 @@ namespace GPU
         /// - Lower values (0.5-1.0): Smaller neighborhood (3x3), sharper details but less stability.
         /// Reasonable range: 0.5-3.0 (in pixels)
         /// </summary>
-        public float SpatialTemporalRadius { get; set; } = 2.0f;
+        public float SpatialTemporalRadius { get; set; } = 1.0f;
 
         // Allocate 20 frames, each of size 'frameSize' (for example, totalPixels).
         public DepthRollingWindow(Accelerator device, int frameWidth, int frameHeight, int frameSize)
@@ -163,7 +155,6 @@ namespace GPU
             result.temporalDecay = TemporalDecay;
             result.similarityDelta = SimilarityDelta;
             result.similaritySigma = SimilaritySigma;
-            result.varianceThreshold = VarianceThreshold;
             result.spatialTemporalRadius = SpatialTemporalRadius;
 
             return result;
@@ -206,7 +197,6 @@ namespace GPU
         public float temporalDecay;
         public float similarityDelta;
         public float similaritySigma;
-        public float varianceThreshold;
         public float spatialTemporalRadius;
         public ArrayView1D<float, Stride1D.Dense> Frame0;
         public ArrayView1D<float, Stride1D.Dense> Frame1;
@@ -260,7 +250,6 @@ namespace GPU
             temporalDecay = 2.5f;
             similarityDelta = 2.0f;
             similaritySigma = 3.0f;
-            varianceThreshold = 1.5f;
             spatialTemporalRadius = 2.0f;
 
             Frame0 = frame0;
@@ -580,9 +569,9 @@ namespace GPU
                 int gradientSamples = 0;
 
                 // Analyze recent temporal gradients
-                for (int t = 0; t < 4; t++)
+                for (int t = 0; t < 6; t++)
                 {
-                    float grad = ComputeTemporalGradient(x, y, t, 2, rollingWindow);
+                    float grad = ComputeTemporalGradient(x, y, t, 3, rollingWindow);
                     if (grad != 0.0f)
                     {
                         gradientSum += grad;
@@ -628,7 +617,7 @@ namespace GPU
 
                 // Adaptive temporal history
                 int maxHistoryFrames = (int)(5 + (1.0f - currentFrameConfidence) * 10.0f * gradientConsistency);
-                maxHistoryFrames = XMath.Min(maxHistoryFrames, 15);
+                maxHistoryFrames = XMath.Min(maxHistoryFrames, 19);
 
                 for (int t = 1; t < maxHistoryFrames; t++)
                 {
@@ -644,8 +633,8 @@ namespace GPU
                     float temporalWeight = XMath.Exp(-(float)t / rollingWindow.temporalDecay);
 
                     // Gradient-based motion suppression
-                    float currGrad = ComputeTemporalGradient(x, y, 0, 2, rollingWindow);
-                    float histGrad = ComputeTemporalGradient(x, y, t, 2, rollingWindow);
+                    float currGrad = ComputeTemporalGradient(x, y, 0, 3, rollingWindow);
+                    float histGrad = ComputeTemporalGradient(x, y, t, 3, rollingWindow);
                     float gradientWeight = 1.0f;
                     if (currGrad != 0.0f && histGrad != 0.0f)
                     {
@@ -677,7 +666,7 @@ namespace GPU
                         frameWeight *= 1.5f;
 
                     // Optional: Edge-aware spatial sampling for recent frames
-                    if (t <= 2 && currentFrameConfidence < 0.5f)
+                    if (t <= 4 && currentFrameConfidence < 0.5f)
                     {
                         int radius = (int)rollingWindow.spatialTemporalRadius;
                         float spatialBoost = 0.0f;
