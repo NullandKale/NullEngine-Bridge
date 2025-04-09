@@ -3,102 +3,11 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
-using OpenCvSharp;
-using Microsoft.Win32.SafeHandles;
+using OpenCvSharp; // Only used here for metadata extraction
 
 namespace NullEngine.Video
 {
-    public static class WindowsJob
-    {
-        private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-        private static extern nint CreateJobObject(nint lpJobAttributes, string lpName);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool SetInformationJobObject(nint hJob, JOBOBJECTINFOCLASS infoClass,
-            nint lpJobObjectInfo, uint cbJobObjectInfoLength);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool AssignProcessToJobObject(nint hJob, nint hProcess);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        public static extern bool TerminateProcess(nint hProcess, uint uExitCode);
-
-        private enum JOBOBJECTINFOCLASS
-        {
-            BasicLimitInformation = 2,
-            ExtendedLimitInformation = 9,
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        struct JOBOBJECT_BASIC_LIMIT_INFORMATION
-        {
-            public long PerProcessUserTimeLimit;
-            public long PerJobUserTimeLimit;
-            public uint LimitFlags;
-            public nuint MinimumWorkingSetSize;
-            public nuint MaximumWorkingSetSize;
-            public uint ActiveProcessLimit;
-            public nint Affinity;
-            public uint PriorityClass;
-            public uint SchedulingClass;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        struct IO_COUNTERS
-        {
-            public ulong ReadOperationCount;
-            public ulong WriteOperationCount;
-            public ulong OtherOperationCount;
-            public ulong ReadTransferCount;
-            public ulong WriteTransferCount;
-            public ulong OtherTransferCount;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
-        {
-            public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
-            public IO_COUNTERS IoInfo;
-            public nuint ProcessMemoryLimit;
-            public nuint JobMemoryLimit;
-            public nuint PeakProcessMemoryUsed;
-            public nuint PeakJobMemoryUsed;
-        }
-
-        private static readonly nint jobHandle;
-
-        static WindowsJob()
-        {
-            jobHandle = CreateJobObject(nint.Zero, null);
-
-            var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-
-            int length = Marshal.SizeOf(info);
-            nint infoPtr = Marshal.AllocHGlobal(length);
-            Marshal.StructureToPtr(info, infoPtr, false);
-
-            SetInformationJobObject(jobHandle, JOBOBJECTINFOCLASS.ExtendedLimitInformation,
-                infoPtr, (uint)length);
-
-            Marshal.FreeHGlobal(infoPtr);
-        }
-
-        public static void AddProcess(Process process)
-        {
-            if (process != null && !process.HasExited)
-            {
-                AssignProcessToJobObject(jobHandle, process.Handle);
-            }
-        }
-    }
-}
-
-namespace NullEngine.Video
-{
-    public class AsyncFfmpegVideoReader : IFrameReader
+    public class AsyncFfmpegVideoReader : IFrameReader, IDisposable
     {
         private Thread frameReadThread;
         private bool isRunning;
@@ -110,14 +19,15 @@ namespace NullEngine.Video
         private AutoResetEvent frameReadyEvent;
 
         private readonly object bufferLock = new object();
-        private readonly Mat[] frameMats = new Mat[2];
+        private readonly IntPtr[] frameBuffers = new IntPtr[2];
         private int currentBufferIndex = 0;
 
         private Process ffmpegProcess;
         private Stream ffmpegStdOut;
         private byte[] readBuffer;
 
-        private Process audioProcess;
+        // The separated audio player.
+        private FfmpegAudioPlayer audioPlayer;
 
         public string VideoFile { get; }
         public int Width { get; }
@@ -141,6 +51,7 @@ namespace NullEngine.Video
         {
             VideoFile = videoFile;
 
+            // Use OpenCV only to extract metadata.
             using (var tmpCap = new VideoCapture(videoFile, VideoCaptureAPIs.FFMPEG))
             {
                 if (!tmpCap.IsOpened())
@@ -151,13 +62,15 @@ namespace NullEngine.Video
             }
 
             this.singleFrameAdvance = singleFrameAdvance;
-            // Remove interactive–disabling flags from ffplay.
+            // Determine pixel format and bytes per pixel.
+            // Note: "bgra" is used if useRGBA is true; otherwise, "bgr24".
             string ffmpegPixFmt = useRGBA ? "bgra" : "bgr24";
-            MatType matType = useRGBA ? MatType.CV_8UC4 : MatType.CV_8UC3;
             bytesPerPixel = useRGBA ? 4 : 3;
+            frameBytes = Width * Height * bytesPerPixel;
 
-            frameMats[0] = new Mat(Height, Width, matType);
-            frameMats[1] = new Mat(Height, Width, matType);
+            // Allocate two unmanaged buffers for double-buffering.
+            frameBuffers[0] = Marshal.AllocHGlobal(frameBytes);
+            frameBuffers[1] = Marshal.AllocHGlobal(frameBytes);
 
             if (singleFrameAdvance)
             {
@@ -183,13 +96,12 @@ namespace NullEngine.Video
             ffmpegProcess.BeginErrorReadLine();
             ffmpegStdOut = ffmpegProcess.StandardOutput.BaseStream;
 
-            frameBytes = Width * Height * bytesPerPixel;
             readBuffer = new byte[frameBytes];
 
-            // Launch ffplay without autoexit or nodisp so that a window is created and interactive input can be processed.
+            // Start the audio player if needed.
             if (!singleFrameAdvance && playAudio)
             {
-                LaunchAudio(videoFile);
+                audioPlayer = new FfmpegAudioPlayer(videoFile);
             }
 
             isRunning = true;
@@ -202,24 +114,6 @@ namespace NullEngine.Video
                 timer = Stopwatch.StartNew();
                 nextFrameTime = 0;
             }
-        }
-
-        private void LaunchAudio(string videoFile)
-        {
-            var audioPsi = new ProcessStartInfo
-            {
-                FileName = "ffplay.exe",
-                Arguments = $"-loglevel error -autoexit -nodisp -i \"{videoFile}\"",
-                UseShellExecute = false,
-                RedirectStandardOutput = false,
-                RedirectStandardError = false,
-                RedirectStandardInput = false,
-                CreateNoWindow = false
-            };
-
-            audioProcess = new Process { StartInfo = audioPsi };
-            audioProcess.Start();
-            WindowsJob.AddProcess(audioProcess);
         }
 
         private void FrameReadLoop()
@@ -295,8 +189,8 @@ namespace NullEngine.Video
                 totalRead += n;
             }
             int nextBufferIndex = 1 - currentBufferIndex;
-            Mat targetMat = frameMats[nextBufferIndex];
-            Marshal.Copy(readBuffer, 0, targetMat.Data, frameBytes);
+            // Copy the frame data from the managed buffer to the unmanaged buffer.
+            Marshal.Copy(readBuffer, 0, frameBuffers[nextBufferIndex], frameBytes);
             lock (bufferLock)
             {
                 currentBufferIndex = nextBufferIndex;
@@ -313,6 +207,7 @@ namespace NullEngine.Video
             catch
             {
             }
+
             ffmpegProcess?.Dispose();
             hasLooped = true;
             var info = ffmpegProcess?.StartInfo;
@@ -333,11 +228,12 @@ namespace NullEngine.Video
             frameReadyEvent.WaitOne();
         }
 
+        // Returns a pointer to the current frame's data.
         public nint GetCurrentFramePtr()
         {
             lock (bufferLock)
             {
-                return frameMats[currentBufferIndex].Data;
+                return frameBuffers[currentBufferIndex];
             }
         }
 
@@ -354,39 +250,26 @@ namespace NullEngine.Video
         }
 
         /// <summary>
-        /// Instead of trying to gracefully shut down, this method forcefully kills the ffplay process using taskkill.
+        /// Stops audio playback by invoking the audio player's ForceKill.
         /// </summary>
         public void Stop()
         {
             if (!singleFrameAdvance)
             {
                 Pause();
-                if (audioProcess != null && !audioProcess.HasExited)
+                if (audioPlayer != null)
                 {
                     try
                     {
-                        Console.WriteLine("Stop(): Executing taskkill to force ffplay termination.");
-                        ForceKillAudio();
+                        Console.WriteLine("Stop(): Stopping audio.");
+                        audioPlayer.ForceKill();
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine("Stop(): Exception during taskkill: " + ex);
+                        Console.WriteLine("Stop(): Exception stopping audio: " + ex);
                     }
                 }
             }
-        }
-
-        private void ForceKillAudio()
-        {
-            // Launch a new process to run taskkill with /F /T /PID.
-            Process killer = new Process();
-            killer.StartInfo.FileName = "taskkill";
-            killer.StartInfo.Arguments = $"/F /T /PID {audioProcess.Id}";
-            killer.StartInfo.CreateNoWindow = true;
-            killer.StartInfo.UseShellExecute = false;
-            killer.Start();
-            killer.WaitForExit();
-            audioProcess.WaitForExit();
         }
 
         public void Dispose()
@@ -407,22 +290,7 @@ namespace NullEngine.Video
                 }
             }
 
-            if (audioProcess != null)
-            {
-                try
-                {
-                    if (!audioProcess.HasExited)
-                    {
-                        Console.WriteLine("Dispose(): Executing taskkill to force ffplay termination.");
-                        ForceKillAudio();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("Dispose(): Exception during taskkill: " + ex);
-                }
-                audioProcess?.Dispose();
-            }
+            audioPlayer?.Dispose();
 
             try
             {
@@ -439,8 +307,15 @@ namespace NullEngine.Video
             }
             ffmpegProcess?.Dispose();
 
-            frameMats[0]?.Dispose();
-            frameMats[1]?.Dispose();
+            // Free unmanaged frame buffers.
+            for (int i = 0; i < frameBuffers.Length; i++)
+            {
+                if (frameBuffers[i] != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(frameBuffers[i]);
+                    frameBuffers[i] = IntPtr.Zero;
+                }
+            }
             frameAdvanceEvent?.Dispose();
             frameReadyEvent?.Dispose();
         }

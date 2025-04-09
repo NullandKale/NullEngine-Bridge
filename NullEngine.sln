@@ -7,7 +7,7 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NullEngine", "NullEngine\Nu
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "RGBDToQuilt", "RGBDToQuilt\RGBDToQuilt.csproj", "{32291470-ACE6-4FD8-B897-5E3B607550D1}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "RGBDRenderer", "RGBDRenderer\RGBDRenderer.csproj", "{F7F91A3F-5618-41EE-A8CF-238559E88137}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "BasicRGBDRenderer", "RGBDRenderer\BasicRGBDRenderer.csproj", "{F7F91A3F-5618-41EE-A8CF-238559E88137}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{F8AD389A-F582-4EC5-BF09-21832686D917}"
 	ProjectSection(SolutionItems) = preProject
@@ -16,7 +16,12 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution 
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Waves", "Waves\Waves.csproj", "{8B7A12D5-0BE3-4CED-874F-F11EB46FD000}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RGBDGenerator", "RGBDGenerator\RGBDGenerator.csproj", "{EE49153D-6C46-4E5B-A6F9-369F8C81ABA4}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "RGBDGenerator", "RGBDGenerator\RGBDGenerator.csproj", "{EE49153D-6C46-4E5B-A6F9-369F8C81ABA4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BridgeRGBDRenderer", "BridgeRGBDRenderer\BridgeRGBDRenderer.csproj", "{A44B6B90-52A2-4D5A-9E2B-950D911871D6}"
+	ProjectSection(ProjectDependencies) = postProject
+		{5C303F45-FBE5-474E-B666-140313098464} = {5C303F45-FBE5-474E-B666-140313098464}
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -66,6 +71,14 @@ Global
 		{EE49153D-6C46-4E5B-A6F9-369F8C81ABA4}.Release|Any CPU.Build.0 = Release|Any CPU
 		{EE49153D-6C46-4E5B-A6F9-369F8C81ABA4}.Release|x64.ActiveCfg = Release|Any CPU
 		{EE49153D-6C46-4E5B-A6F9-369F8C81ABA4}.Release|x64.Build.0 = Release|Any CPU
+		{A44B6B90-52A2-4D5A-9E2B-950D911871D6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A44B6B90-52A2-4D5A-9E2B-950D911871D6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A44B6B90-52A2-4D5A-9E2B-950D911871D6}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{A44B6B90-52A2-4D5A-9E2B-950D911871D6}.Debug|x64.Build.0 = Debug|Any CPU
+		{A44B6B90-52A2-4D5A-9E2B-950D911871D6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A44B6B90-52A2-4D5A-9E2B-950D911871D6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A44B6B90-52A2-4D5A-9E2B-950D911871D6}.Release|x64.ActiveCfg = Release|Any CPU
+		{A44B6B90-52A2-4D5A-9E2B-950D911871D6}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

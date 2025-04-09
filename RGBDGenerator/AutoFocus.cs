@@ -11,18 +11,13 @@ namespace GPU
     public static partial class Kernels
     {
         /// <summary>
-        /// Kernel to analyze a depth map and determine optimal focal point.
-        /// This implementation uses a weighted histogram approach to find the most prominent
-        /// depths while giving preference to central regions and avoiding background/foreground extremes.
+        /// Kernel to analyze a depth map and determine optimal focal point by filling a histogram.
         /// </summary>
         /// <param name="index">Thread index</param>
         /// <param name="depthMap">Input depth map</param>
         /// <param name="width">Width of depth map</param>
         /// <param name="height">Height of depth map</param>
-        /// <param name="histogram">Output histogram (typically 256 bins)</param>
-        /// <param name="faceBoxes">Optional detected face boxes (x, y, width, height, confidence) - each face uses 5 values</param>
-        /// <param name="numFaces">Number of detected faces</param>
-        /// <param name="useFaces">Whether to prioritize faces (1) or not (0)</param>
+        /// <param name="histogram">Output histogram (256 bins)</param>
         public static void AnalyzeDepthForAutoFocus(
             Index1D index,
             ArrayView<float> depthMap,
@@ -55,33 +50,27 @@ namespace GPU
             float normalizedX = x / (float)width;
             float normalizedY = y / (float)height;
 
-            // Calculate distance from center (0,0 is top-left, 0.5,0.5 is center)
+            // Distance from center
             float centerDistX = XMath.Abs(normalizedX - 0.5f);
             float centerDistY = XMath.Abs(normalizedY - 0.5f);
             float centerDist = XMath.Sqrt(centerDistX * centerDistX + centerDistY * centerDistY);
 
-            // Center weighting: pixels closer to center get higher weight (max 1.0)
-            float centerWeight = 1.0f - XMath.Min(centerDist * 1.5f, 0.9f); // 1.0 at center, 0.1 at corners
-
-            // Initialize our final weight
+            // Weight: near center => bigger. We'll store up to 1000
+            float centerWeight = 1.0f - XMath.Min(centerDist * 1.5f, 0.9f);
             float weight = centerWeight;
-      
-            // Map the depth value to a histogram bin (assuming depth is normalized to [0,1])
+
+            // Map depth => histogram bin
             int bin = (int)(depth * (histogram.Length - 1));
+            bin = XMath.Clamp(bin, 0, (int)histogram.Length - 1);
 
-            // Clamp bin to valid range
-            bin = (int)(XMath.Max(0, XMath.Min(bin, histogram.Length - 1)));
-
-            // Convert weight to integer contribution (scale up for better precision)
+            // Convert weight => integer contribution
             int contribution = (int)(weight * 1000.0f);
-
-            // Use atomic add to update the histogram bin safely
             Atomic.Add(ref histogram[bin], contribution);
         }
 
         /// <summary>
         /// Kernel to remap depth values based on an auto-focus target depth.
-        /// This will shift the focus plane to 0.5 based on the autofocus strength.
+        /// This shifts the focus plane to 0.5 based on the autofocus strength.
         /// </summary>
         /// <param name="index">Thread index</param>
         /// <param name="depthMap">Input/output depth map</param>
@@ -102,91 +91,177 @@ namespace GPU
 
             // Skip invalid depth values
             if (depth <= 0.0f)
-            {
                 return;
-            }
 
-            // Get the min/max depth for normalization
             float minDepth = depthMinMax[0];
             float maxDepth = depthMinMax[1];
             float depthRange = maxDepth - minDepth;
 
             if (depthRange <= 1e-6f)
             {
-                // Avoid division by zero if the depth range is too small
                 depthMap[index] = 0.5f;
                 return;
             }
 
-            // Normalize the depth to [0,1] range
+            // Normalize
             float normalizedDepth = (depth - minDepth) / depthRange;
 
-            // Calculate how much to shift by (based on strength)
+            // Shift so that focusDepth => 0.5
             float targetNormalizedFocus = (focusDepth - minDepth) / depthRange;
             float shift = (0.5f - targetNormalizedFocus) * autoFocusStrength;
-
-            // Apply the shift and blend based on strength
             float remappedDepth = normalizedDepth + shift;
 
-            // Optional: Apply a non-linear compression around the focus point
-            // This gives more detail near the focus plane and less in far background/foreground
+            // Optional compression near focus
             if (autoFocusStrength > 0.0f)
             {
-                // Calculate distance from focus plane (normalized)
                 float focusDistance = XMath.Abs(normalizedDepth - targetNormalizedFocus);
-
-                // Apply a slight sigmoid curve for compression (stronger at edges)
-                float compressionStrength = autoFocusStrength * 0.25f; // Reduce effect to be subtle
+                float compressionStrength = autoFocusStrength * 0.25f;
                 float compression = compressionStrength * (focusDistance * focusDistance);
 
-                // Apply compression: pull values toward the focus plane more aggressively
-                // when they're far from it
                 if (normalizedDepth < targetNormalizedFocus)
-                {
-                    remappedDepth += compression; // Pull up values below focus
-                }
+                    remappedDepth += compression;
                 else
-                {
-                    remappedDepth -= compression; // Pull down values above focus
-                }
+                    remappedDepth -= compression;
             }
 
-            // Clamp result to [0,1]
-            remappedDepth = XMath.Max(0.0f, XMath.Min(1.0f, remappedDepth));
-
-            // Convert back to original depth range
+            // Clamp to [0,1], then back to original range
+            remappedDepth = XMath.Clamp(remappedDepth, 0f, 1f);
             depthMap[index] = remappedDepth * depthRange + minDepth;
         }
+    }
 
-        // Find the significant peaks (local maxima)
-        const int MinPeakHeight = 100; // Minimum contribution to consider a peak
-        const int MinPeakDistance = 10; // Minimum bins between peaks
-        struct Peak { public int position; public int height; }
+    /// <summary>
+    /// Encapsulates GPU-based histogram building + CPU-based auto-focus calculations
+    /// for depth. The DepthGenerator can create an instance of this and call
+    /// its methods to gather depth stats, compute a focus depth, and remap
+    /// the depth buffer.
+    /// </summary>
+    public sealed class DepthAutoFocusAndStats : IDisposable
+    {
+        private readonly Accelerator _device;
+
+        // GPU kernel for building histogram
+        public Action<Index1D, ArrayView<float>, int, int, ArrayView<int>> AnalyzeDepthKernel;
+        // GPU kernel for remapping depths once we have our focus
+        public Action<Index1D, ArrayView<float>, float, float, ArrayView<float>> RemapDepthKernel;
+
+        // GPU buffers
+        public MemoryBuffer1D<int, Stride1D.Dense> DepthHistogram { get; private set; }
+        public MemoryBuffer1D<float, Stride1D.Dense> DepthMinMax { get; private set; }
+
+        private const int HistogramBins = 256;
+
+        // We'll replicate the same constants from the GPU side for local maxima
+        private const int MinPeakHeight = 100;
+        private const int MinPeakDistance = 10;
+
+        public DepthAutoFocusAndStats(Accelerator device)
+        {
+            _device = device;
+
+            // Load the needed kernels
+            AnalyzeDepthKernel = _device.LoadAutoGroupedStreamKernel<
+                Index1D, ArrayView<float>, int, int, ArrayView<int>>(
+                Kernels.AnalyzeDepthForAutoFocus);
+
+            RemapDepthKernel = _device.LoadAutoGroupedStreamKernel<
+                Index1D, ArrayView<float>, float, float, ArrayView<float>>(
+                Kernels.RemapDepthForAutoFocus);
+
+            // Allocate GPU buffers
+            DepthHistogram = _device.Allocate1D<int>(HistogramBins);
+            DepthMinMax = _device.Allocate1D<float>(2); // [0] = minDepth, [1] = maxDepth
+        }
 
         /// <summary>
-        /// Helper kernel to find the optimal focus depth from a histogram.
-        /// This finds the weighted center of the most significant histogram peak.
+        /// Builds the histogram on the GPU, then copies it to CPU and uses
+        /// single-threaded logic to find the best focus depth.
+        /// Then uses that focus to remap depth values (still on the GPU).
         /// </summary>
-        /// <param name="index">Thread index (unused, this is a single-thread kernel)</param>
-        /// <param name="histogram">Input histogram</param>
-        /// <param name="focusResult">Output array: [0]=focus depth, [1]=confidence</param>
-        public static void FindOptimalFocusDepth(
-            Index1D index,
-            ArrayView<int> histogram,
-            ArrayView<float> focusResult)
+        /// <param name="depthFloats">CPU depth buffer</param>
+        /// <param name="width">Depth image width</param>
+        /// <param name="height">Depth image height</param>
+        /// <param name="lastFocusDepth">Focus from previous frame (for smoothing)</param>
+        /// <param name="focusSmoothing">Blend factor [0..1], e.g. 0.8 => mostly old focus</param>
+        /// <param name="autoFocusStrength">Strength of effect [0..1]</param>
+        /// <returns>Newly computed focus depth after smoothing</returns>
+        public float ApplyAutoFocus(
+            float[] depthFloats,
+            int width,
+            int height,
+            float lastFocusDepth,
+            float focusSmoothing,
+            float autoFocusStrength)
         {
-            if (index > 0) return; // Only use the first thread
+            int totalPixels = depthFloats.Length;
+            if (totalPixels <= 0)
+                return lastFocusDepth;
 
-            int histogramSize = (int)histogram.Length;
+            // (1) CPU min/max
+            float minDepth = float.MaxValue;
+            float maxDepth = float.MinValue;
+            for (int i = 0; i < totalPixels; i++)
+            {
+                float d = depthFloats[i];
+                if (d <= 0f) // skip invalid
+                    continue;
 
-            // First, smooth the histogram to reduce noise
+                if (d < minDepth) minDepth = d;
+                if (d > maxDepth) maxDepth = d;
+            }
+            if (minDepth > maxDepth)
+            {
+                // No valid depth
+                return lastFocusDepth;
+            }
+
+            // (2) Copy depth to GPU
+            using var depthBuffer = _device.Allocate1D<float>(totalPixels);
+            depthBuffer.CopyFromCPU(depthFloats);
+
+            // (3) Copy min/max to GPU
+            float[] minMax = new float[] { minDepth, maxDepth };
+            DepthMinMax.CopyFromCPU(minMax);
+
+            // (4) Build histogram on GPU
+            DepthHistogram.MemSetToZero();
+            AnalyzeDepthKernel(totalPixels, depthBuffer.View, width, height, DepthHistogram.View);
+            _device.Synchronize();
+
+            // (5) Copy histogram back to CPU and do single-threaded logic
+            int[] histogramCPU = new int[HistogramBins];
+            DepthHistogram.CopyToCPU(histogramCPU);
+
+            float rawFocusDepth = FindBestFocusDepthCPU(histogramCPU);
+            // optionally you could compute a "confidence" but not used here
+
+            // (6) Smooth with old focus
+            float newFocusDepth = lastFocusDepth * focusSmoothing +
+                                  rawFocusDepth * (1f - focusSmoothing);
+
+            // (7) Remap depth on GPU
+            RemapDepthKernel(totalPixels, depthBuffer.View, newFocusDepth, autoFocusStrength, DepthMinMax.View);
+            _device.Synchronize();
+
+            // (8) Copy updated depth back to CPU
+            depthBuffer.CopyToCPU(depthFloats);
+
+            return newFocusDepth;
+        }
+
+        /// <summary>
+        /// CPU method replicating local maxima detection & smoothing logic
+        /// from the old GPU kernel, but done single-threaded on the CPU.
+        /// </summary>
+        private float FindBestFocusDepthCPU(int[] histogram)
+        {
+            int histogramSize = histogram.Length;
+
+            // Smooth
             int[] smoothed = new int[histogramSize];
             for (int i = 0; i < histogramSize; i++)
             {
-                int sum = 0;
-                int count = 0;
-
-                // Apply a 5-bin average for smoothing
+                int sum = 0, count = 0;
                 for (int j = i - 2; j <= i + 2; j++)
                 {
                     if (j >= 0 && j < histogramSize)
@@ -195,105 +270,130 @@ namespace GPU
                         count++;
                     }
                 }
-
-                smoothed[i] = count > 0 ? sum / count : 0;
+                smoothed[i] = (count > 0) ? (sum / count) : 0;
             }
 
-
-            Peak[] peaks = new Peak[20]; // Up to 20 peaks
-            int peakCount = 0;
+            // Find local maxima
+            var peaks = new System.Collections.Generic.List<(int pos, int height)>(20);
 
             for (int i = 2; i < histogramSize - 2; i++)
             {
                 int current = smoothed[i];
-
-                // Check if this is a local maximum
                 if (current > MinPeakHeight &&
                     current > smoothed[i - 2] && current > smoothed[i - 1] &&
                     current > smoothed[i + 1] && current > smoothed[i + 2])
                 {
-                    // Check if it's far enough from existing peaks
                     bool farEnough = true;
-                    for (int p = 0; p < peakCount; p++)
+
+                    // check distance from existing peaks
+                    for (int p = 0; p < peaks.Count; p++)
                     {
-                        if (XMath.Abs(i - peaks[p].position) < MinPeakDistance)
+                        if (System.Math.Abs(i - peaks[p].pos) < MinPeakDistance)
                         {
                             farEnough = false;
-                            // If this peak is higher than the existing one, replace it
+                            // if this peak is higher, replace
                             if (current > peaks[p].height)
                             {
-                                peaks[p].position = i;
-                                peaks[p].height = current;
+                                peaks[p] = (i, current);
                             }
                             break;
                         }
                     }
 
-                    // Add as a new peak if far enough and we have space
-                    if (farEnough && peakCount < peaks.Length)
+                    if (farEnough && peaks.Count < 20)
                     {
-                        peaks[peakCount].position = i;
-                        peaks[peakCount].height = current;
-                        peakCount++;
+                        peaks.Add((i, current));
                     }
                 }
             }
 
-            // If no significant peaks were found, use the bin with maximum value
-            if (peakCount == 0)
+            // If no peaks, pick the bin with the largest value
+            if (peaks.Count == 0)
             {
-                int maxBin = 0;
-                int maxValue = 0;
-
+                int maxBin = 0, maxValue = 0;
                 for (int i = 0; i < histogramSize; i++)
                 {
-                    if (smoothed[i] > maxValue)
+                    int val = smoothed[i];
+                    if (val > maxValue)
                     {
-                        maxValue = smoothed[i];
+                        maxValue = val;
                         maxBin = i;
                     }
                 }
-
-                // Use max bin as focus depth
-                focusResult[0] = maxBin / (float)(histogramSize - 1);
-                focusResult[1] = 0.5f; // Medium confidence
-                return;
+                return maxBin / (float)(histogramSize - 1);
             }
 
-            // Sort peaks by height (descending)
-            for (int i = 0; i < peakCount - 1; i++)
-            {
-                for (int j = i + 1; j < peakCount; j++)
-                {
-                    if (peaks[i].height < peaks[j].height)
-                    {
-                        Peak temp = peaks[i];
-                        peaks[i] = peaks[j];
-                        peaks[j] = temp;
-                    }
-                }
-            }
+            // Sort by descending height
+            peaks.Sort((a, b) => b.height.CompareTo(a.height));
 
-            // Calculate weighted average of the top 2 peaks (or just 1 if that's all we have)
-            int peaksToUse = XMath.Min(2, peakCount);
+            // Weighted average of top 2 peaks
+            int peaksToUse = System.Math.Min(2, peaks.Count);
             float weightedSum = 0;
             int totalWeight = 0;
 
             for (int i = 0; i < peaksToUse; i++)
             {
-                weightedSum += peaks[i].position * peaks[i].height;
+                weightedSum += peaks[i].pos * peaks[i].height;
                 totalWeight += peaks[i].height;
             }
 
-            // Calculate normalized focus depth
             float focusDepth = weightedSum / (totalWeight * (histogramSize - 1));
+            return focusDepth;
+        }
 
-            // Calculate confidence based on peak sharpness
-            float confidence = (float)peaks[0].height / (totalWeight + 1);
+        /// <summary>
+        /// Optional CPU-based pass to refine focus using face boxes or other logic.
+        /// (Single-threaded approach.)
+        /// </summary>
+        public float RefineFocusDepthWithFaces(
+            float[] depthFloats,
+            float[] faceBoxes,
+            int numFaces,
+            int width,
+            int height,
+            float currentFocusDepth)
+        {
+            if (numFaces <= 0)
+                return currentFocusDepth;
 
-            // Store results
-            focusResult[0] = focusDepth;
-            focusResult[1] = confidence;
+            float totalFaceDepth = 0f;
+            float totalWeight = 0f;
+
+            for (int i = 0; i < numFaces; i++)
+            {
+                int baseIdx = i * 5;
+                float x = faceBoxes[baseIdx + 0];
+                float y = faceBoxes[baseIdx + 1];
+                float w = faceBoxes[baseIdx + 2];
+                float h = faceBoxes[baseIdx + 3];
+                float conf = faceBoxes[baseIdx + 4];
+
+                int cx = (int)(x + w * 0.5f);
+                int cy = (int)(y + h * 0.5f);
+
+                if (cx < 0 || cy < 0 || cx >= width || cy >= height)
+                    continue;
+
+                float faceDepth = depthFloats[cy * width + cx];
+                if (faceDepth > 0f)
+                {
+                    totalFaceDepth += faceDepth * conf;
+                    totalWeight += conf;
+                }
+            }
+
+            if (totalWeight <= 0f)
+                return currentFocusDepth;
+
+            float avgFaceDepth = totalFaceDepth / totalWeight;
+            // Example: move halfway toward face depth
+            return 0.5f * currentFocusDepth + 0.5f * avgFaceDepth;
+        }
+
+        public void Dispose()
+        {
+            DepthHistogram?.Dispose();
+            DepthMinMax?.Dispose();
         }
     }
 }

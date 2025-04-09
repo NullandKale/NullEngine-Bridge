@@ -51,7 +51,7 @@ namespace RGBDToQuiltCLI
                 window.MakeCurrent();
 
                 // Initialize the Bridge SDK
-                if (!Controller.Initialize("RGBDToQuiltCLI"))
+                if (!Controller.InitializeWithPath("RGBDToQuiltCLI", "C:\\Users\\alec\\source\\repos\\LookingGlassBridge\\out\\build\\x64-Debug"))
                 {
                     Console.Error.WriteLine("Failed to initialize the Bridge SDK. Ensure the SDK is installed and accessible.");
                     return;

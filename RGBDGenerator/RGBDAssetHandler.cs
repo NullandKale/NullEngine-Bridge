@@ -51,9 +51,9 @@ namespace RGBDGenerator
         private DepthGenerator depthGenerator;
 
         // Constants representing different inference resolutions for different input modes.
-        private const int imageInferenceSize = 1024;          // Resolution used for static images
-        private const int videoRealTimeInferenceSize = 518;     // Lower resolution for real-time video
-        private const int videoRecordInferenceSize = 518;      // Higher resolution for recording from file inputs
+        private const int imageInferenceSize = 1280;          // Resolution used for static images
+        private const int videoRealTimeInferenceSize = 640;     // Lower resolution for real-time video
+        private const int videoRecordInferenceSize = 720;      // Higher resolution for recording from file inputs
 
         // Keeps track of the last processed static image file, so we can skip reprocessing if it doesn't change.
         private string lastProcessedFilename;
@@ -72,7 +72,10 @@ namespace RGBDGenerator
             // By default, use the high-res setting for static images.
             int inferenceSize = imageInferenceSize;
             // Initialize the depth generator using a specific ONNX model.
-            depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small.onnx");
+            depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small_fp16.onnx");
+            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small.onnx");
+            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-base_fp16.onnx");
+            //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large_fp16.onnx");
         }
 
         /// <summary>
@@ -400,7 +403,7 @@ namespace RGBDGenerator
                 else
                 {
                     string outputFilename = "output_" + System.IO.Path.GetFileName(Filename);
-                    videoWriter = new VideoWriter(outputFilename, frameReader.Fps, frameReader.Width * 2, frameReader.Height);
+                    videoWriter = new VideoWriter(outputFilename, frameReader.Fps, frameReader.Width * 2, frameReader.Height, Filename);
                 }
                 UpdateDepthInferenceSize();
             }
