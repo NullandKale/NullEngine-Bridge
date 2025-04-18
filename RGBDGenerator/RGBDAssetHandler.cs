@@ -52,7 +52,7 @@ namespace RGBDGenerator
 
         // Constants representing different inference resolutions for different input modes.
         private const int imageInferenceSize = 1280;          // Resolution used for static images
-        private const int videoRealTimeInferenceSize = 640;     // Lower resolution for real-time video
+        private const int videoRealTimeInferenceSize = 512;     // Lower resolution for real-time video
         private const int videoRecordInferenceSize = 720;      // Higher resolution for recording from file inputs
 
         // Keeps track of the last processed static image file, so we can skip reprocessing if it doesn't change.
@@ -72,7 +72,7 @@ namespace RGBDGenerator
             // By default, use the high-res setting for static images.
             int inferenceSize = imageInferenceSize;
             // Initialize the depth generator using a specific ONNX model.
-            depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small_fp16.onnx");
+            depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small_fp16.onnx", null, true);
             //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small.onnx");
             //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-base_fp16.onnx");
             //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large_fp16.onnx");
@@ -188,7 +188,14 @@ namespace RGBDGenerator
                     string outputFileName = "output_" +
                         System.IO.Path.GetFileNameWithoutExtension(Filename) + "_" +
                         System.DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".png";
-                    result.Save(outputFileName, System.Drawing.Imaging.ImageFormat.Png);
+                    try
+                    {
+                        result.Save(outputFileName, System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine(ex.ToString());
+                    }
                 }
 
                 // Convert the Bitmap back to a texture

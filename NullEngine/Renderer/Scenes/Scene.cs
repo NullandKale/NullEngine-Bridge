@@ -147,7 +147,7 @@ namespace NullEngine.Renderer.Scenes
             }
 
             Focus = MathHelper.Clamp(Focus, -10.0f, 10.0f);
-            Offset = MathHelper.Clamp(Offset, 0.0f, 2.0f);
+            Offset = MathHelper.Clamp(Offset, 0.0f, 6.0f);
         }
 
         public void Update(float deltaTime)

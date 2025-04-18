@@ -2,7 +2,7 @@
   "profiles": {
     "RGBDToQuilt": {
       "commandName": "Project",
-      "commandLineArgs": "--input \"C:\\Users\\alec\\Downloads\\lebron1.png\" --columns 12 --rows 5"
+      "commandLineArgs": "--input \"C:\\Users\\alec\\Downloads\\lebron2.png\" --columns 12 --rows 5"
     }
   }
 }

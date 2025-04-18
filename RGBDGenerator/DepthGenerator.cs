@@ -2,6 +2,7 @@
 using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using GPU;
 using ILGPU;
@@ -32,6 +33,10 @@ namespace LKG_NVIDIA_RAYS.Utils
         public Action<Index1D, ArrayView<float>, dImage, dImage, int, int, float, float, int> depthFloatsToBGRAImageKernel;
         public Action<Index1D, dDepthRollingWindow, ArrayView<float>> filterDepthRollingWindowKernel;
         public Action<Index1D, dImage, dImage, dImage, float, int> temporalAAKernel;
+
+        // Lanczos resize kernel + reusable tmp image for server scaling
+        public Action<Index1D, dImage, dImage, float> lanczosScaleKernel;
+        private GPUImage? _tmpScaledForServer;
 
         // ONNX session
         private readonly InferenceSession _session;
@@ -74,10 +79,23 @@ namespace LKG_NVIDIA_RAYS.Utils
 
         private float border;
 
+        // --- Remote depth‑server support ------------------------------
+        private readonly bool _useServerDepth;          // choose between ONNX vs server
+        private readonly HttpClient _httpClient;             // shared for all requests
+        private readonly string _depthEndpoint;          // e.g. "http://127.0.0.1:5001/depth"
 
-        public DepthGenerator(int size, string modelPath, string? faceModelPath = null)
+        public DepthGenerator(
+                int size,
+                string modelPath,
+                string? faceModelPath = null,
+                bool useServerDepth = false,
+                string depthServerBaseUrl = "http://127.0.0.1:5001")
         {
-            // 1) Setup ILGPU context/device
+            _useServerDepth = useServerDepth;
+            _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            _depthEndpoint = $"{depthServerBaseUrl.TrimEnd('/')}/depth_raw";
+
+            // ---------- ILGPU context/device (unchanged) -----------------
             int adjustedSize = (int)Math.Floor(size / 14.0) * 14;
             if (adjustedSize < 14) adjustedSize = 14;
 
@@ -90,57 +108,119 @@ namespace LKG_NVIDIA_RAYS.Utils
                 .Inlining(InliningMode.Aggressive)
                 .AutoAssertions()
                 .Optimize(OptimizationLevel.O2));
-
             device = context.GetPreferredDevice(preferCPU: debug).CreateAccelerator(context);
 
-            // 2) Load relevant kernels from our GPU.Kernels class
+            // ---------- kernels (unchanged) ------------------------------
             imageToRGBFloatsKernel = device.LoadAutoGroupedStreamKernel<Index1D, dImage, ArrayView<float>, int, int, float, int>(Kernels.ImageToRGBFloats);
             depthFloatsToBGRAImageKernel = device.LoadAutoGroupedStreamKernel<Index1D, ArrayView<float>, dImage, dImage, int, int, float, float, int>(Kernels.DepthFloatsToBGRAImageFull);
             filterDepthRollingWindowKernel = device.LoadAutoGroupedStreamKernel<Index1D, dDepthRollingWindow, ArrayView<float>>(Kernels.FilterDepthRollingWindow);
             temporalAAKernel = device.LoadAutoGroupedStreamKernel<Index1D, dImage, dImage, dImage, float, int>(Kernels.TemporalAA);
+            lanczosScaleKernel = device.LoadAutoGroupedStreamKernel<Index1D, dImage, dImage, float>(Kernels.ImageLanczosScale);
 
-            // 3) Initialize dimensions, ONNX session
+            // ---------- inference size + buffers -------------------------
             _targetWidth = adjustedSize;
             _targetHeight = adjustedSize;
             border = 0.0f;
 
-            using var cudaProviderOptions = new OrtCUDAProviderOptions();
-            var providerOptionsDict = new Dictionary<string, string>
-            {
-                ["cudnn_conv_use_max_workspace"] = "1",
-                ["cudnn_conv1d_pad_to_nc1d"] = "1"
-            };
-            cudaProviderOptions.UpdateOptions(providerOptionsDict);
-
-            using SessionOptions sessionOptions = SessionOptions.MakeSessionOptionWithCudaProvider(cudaProviderOptions);
-            sessionOptions.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
-            sessionOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_EXTENDED;
-            sessionOptions.InterOpNumThreads = 16;
-            sessionOptions.IntraOpNumThreads = 16;
-
-            _session = new InferenceSession(modelPath, sessionOptions);
-
-            // 4) Allocate input arrays for ONNX
             int floatCount = 3 * _targetHeight * _targetWidth;
             inputFloatData = new float[floatCount];
             inputTensor = new DenseTensor<float>(inputFloatData, new[] { 1, 3, _targetHeight, _targetWidth });
             depthFloats = new float[_targetHeight * _targetWidth];
 
-            // 5) Optional: Face detector
+            // ---------- ONNX setup  (skip when using server) -------------
+            if (!_useServerDepth)
+            {
+                using var cudaProviderOptions = new OrtCUDAProviderOptions();
+                var providerOptionsDict = new Dictionary<string, string>
+                {
+                    ["cudnn_conv_use_max_workspace"] = "1",
+                    ["cudnn_conv1d_pad_to_nc1d"] = "1"
+                };
+                cudaProviderOptions.UpdateOptions(providerOptionsDict);
+
+                using SessionOptions sessionOptions = SessionOptions.MakeSessionOptionWithCudaProvider(cudaProviderOptions);
+                sessionOptions.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
+                sessionOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_EXTENDED;
+                sessionOptions.InterOpNumThreads = 8;
+                sessionOptions.IntraOpNumThreads = 8;
+
+                _session = new InferenceSession(modelPath, sessionOptions);
+            }
+
+            // ---------- optional face‑detector & autofocus (unchanged) ---
             if (!string.IsNullOrEmpty(faceModelPath))
             {
                 //_faceDetector = new FaceDetector(faceModelPath, device);
             }
-
-            // 6) Create our new auto-focus helper
             _autoFocusAndStats = new DepthAutoFocusAndStats(device);
 
-            // 7) Set auto-focus defaults
-            AutoFocusEnabled = true;
+            AutoFocusEnabled = false;
             AutoFocusStrength = 0.7f;
             AutoFocusUseFaces = false;
             LastFocusDepth = 0.5f;
             FocusSmoothing = 0.8f;
+        }
+
+        /// <summary>
+        /// Sends the input frame as an uncompressed RGBA8 buffer to the
+        /// Flask <code>/depth_raw</code> endpoint and receives a little‑endian
+        /// <c>float32</c> depth map (values ∈ [0,1]).  
+        /// The returned array length is <c>_targetWidth * _targetHeight</c>.
+        /// </summary>
+        private float[] RequestDepthFromServer(GPUImage inputImage, bool RGBSwapBGR /* unused now */)
+        {
+            // ------------------------------------------------------------------
+            // A) pull RGBA8 pixels from GPUImage
+            // ------------------------------------------------------------------
+            int[] rgbaSrc = inputImage.toCPU();            // len = W*H, 32‑bit each
+            int width = inputImage.width;              // must match _targetWidth
+            int height = inputImage.height;             // must match _targetHeight
+
+            // If you insist on fixed inference size, make sure they match here
+            if (width != _targetWidth || height != _targetHeight)
+                throw new InvalidOperationException(
+                    $"Input dims ({width}×{height}) differ from _targetWidth/_targetHeight " +
+                    $"({_targetWidth}×{_targetHeight}). Call UpdateInferenceSize first.");
+
+            // Turn the int[] view into a byte[] without per‑pixel copying
+            int byteCount = rgbaSrc.Length * sizeof(int);
+            byte[] byteBuf = ArrayPool<byte>.Shared.Rent(byteCount);
+            MemoryMarshal.AsBytes(rgbaSrc.AsSpan()).CopyTo(byteBuf);
+
+            // ------------------------------------------------------------------
+            // B) build multipart/form‑data
+            // ------------------------------------------------------------------
+            using var form = new MultipartFormDataContent
+    {
+        { new StringContent(width.ToString()),  "width"  },
+        { new StringContent(height.ToString()), "height" }
+    };
+
+            var rawContent = new ByteArrayContent(byteBuf, 0, byteCount);
+            rawContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            form.Add(rawContent, "data", "frame.raw");
+
+            // ------------------------------------------------------------------
+            // C) POST and receive depth buffer
+            // ------------------------------------------------------------------
+            using HttpResponseMessage resp = _httpClient.PostAsync(_depthEndpoint, form).Result;
+            resp.EnsureSuccessStatusCode();
+            byte[] depthBytes = resp.Content.ReadAsByteArrayAsync().Result;
+
+            // release pooled buffer
+            ArrayPool<byte>.Shared.Return(byteBuf);
+
+            // ------------------------------------------------------------------
+            // D) convert depth bytes → float[]
+            // ------------------------------------------------------------------
+            int expectedBytes = width * height * sizeof(float);
+            if (depthBytes.Length != expectedBytes)
+                throw new InvalidOperationException(
+                    $"Depth buffer size mismatch (got {depthBytes.Length}, expected {expectedBytes}).");
+
+            float[] depthArr = new float[width * height];
+            Buffer.BlockCopy(depthBytes, 0, depthArr, 0, depthBytes.Length);
+            return depthArr;
         }
 
         // ...
@@ -177,14 +257,14 @@ namespace LKG_NVIDIA_RAYS.Utils
         /// by calling our <c>DepthAutoFocusAndStats</c> helper.
         /// Updates <c>LastFocusDepth</c> with the new focus value.
         /// </summary>
-        private void RunAutoFocus(float[] depthFloatsCPU)
+        private void RunAutoFocus()
         {
             if (!AutoFocusEnabled || _autoFocusAndStats == null)
                 return;
 
             // 1) Let our helper compute a new focus
             float newFocus = _autoFocusAndStats.ApplyAutoFocus(
-                depthFloatsCPU,
+                depthFloatBuffer,
                 _targetWidth,
                 _targetHeight,
                 LastFocusDepth,
@@ -233,16 +313,53 @@ namespace LKG_NVIDIA_RAYS.Utils
             // Copy GPU => CPU for ONNX inference
             inputFloatBuffer.CopyToCPU(inputFloatData);
 
-            // C) ONNX forward pass
-            var container = new List<NamedOnnxValue>
+            // -----------------------------------------------------------
+            // C) Depth inference
+            // -----------------------------------------------------------
+            if (_useServerDepth)
             {
-                NamedOnnxValue.CreateFromTensor<float>("pixel_values", inputTensor!)
-            };
+                // --- make sure the frame we send to the server matches the
+                //     inference size (_targetWidth × _targetHeight).  If not,
+                //     resize on‑GPU with Lanczos3 and reuse a temporary buffer.
+                GPUImage imageForServer;
 
-            using (var outputs = _session.Run(container))
+                if (inputImage.width == _targetWidth && inputImage.height == _targetHeight)
+                {
+                    imageForServer = inputImage;                // no scaling needed
+                }
+                else
+                {
+                    if (_tmpScaledForServer == null ||
+                        _tmpScaledForServer.width != _targetWidth ||
+                        _tmpScaledForServer.height != _targetHeight)
+                    {
+                        _tmpScaledForServer?.Dispose();
+                        _tmpScaledForServer = new GPUImage(_targetWidth, _targetHeight);
+                    }
+
+                    lanczosScaleKernel(
+                        _targetWidth * _targetHeight,
+                        inputImage.toDevice(device),
+                        _tmpScaledForServer.toDevice(device),
+                        3f /* lobes: Lanczos3 */);
+                    device.Synchronize();
+
+                    imageForServer = _tmpScaledForServer;
+                }
+
+                // Send to Flask, receive float[] depth
+                depthFloats = RequestDepthFromServer(imageForServer, RGBSwapBGR);
+            }
+            else
             {
-                var output = outputs.First();
-                var depthTensor = output.AsTensor<float>();
+                // ---- local ONNX path (unchanged) ----
+                var container = new List<NamedOnnxValue>
+    {
+        NamedOnnxValue.CreateFromTensor<float>("pixel_values", inputTensor!)
+    };
+
+                using var outputs = _session.Run(container);
+                var depthTensor = outputs.First().AsTensor<float>();
 
                 ReadOnlySpan<int> dims = depthTensor.Dimensions;
                 if (dims.Length != 3 || dims[1] != _targetHeight || dims[2] != _targetWidth)
@@ -254,20 +371,16 @@ namespace LKG_NVIDIA_RAYS.Utils
                     if (denseTensor?.Length != depthFloats!.Length)
                         throw new InvalidOperationException("Invalid tensor format?");
 
-                    using var sourceHandle = denseTensor.Buffer.Pin();
-                    fixed (float* pDest = depthFloats)
+                    using var srcHandle = denseTensor.Buffer.Pin();
+                    fixed (float* dest = depthFloats)
                     {
-                        Buffer.MemoryCopy(
-                            sourceHandle.Pointer,
-                            pDest,
-                            depthFloats.Length * sizeof(float),
-                            denseTensor.Length * sizeof(float));
+                        Buffer.MemoryCopy(srcHandle.Pointer,
+                                          dest,
+                                          depthFloats.Length * sizeof(float),
+                                          denseTensor.Length * sizeof(float));
                     }
                 }
             }
-
-            // D) Optionally run auto-focus on the CPU-side depth
-            RunAutoFocus(depthFloats);
 
             // E) Post-process with rolling window, colorize, TAA, etc.
 
@@ -297,6 +410,8 @@ namespace LKG_NVIDIA_RAYS.Utils
                 depthFloatBuffer = device.Allocate1D<float>(totalPixels);
             }
             depthFloatBuffer.CopyFromCPU(depthFloats);
+
+            RunAutoFocus();
 
             // Rolling-window filter
             if (rollingWindow == null)
@@ -357,8 +472,9 @@ namespace LKG_NVIDIA_RAYS.Utils
             rollingWindow?.Dispose();
             _faceDetector?.Dispose();
 
-            // Also dispose our auto-focus helper
             _autoFocusAndStats?.Dispose();
+
+            _httpClient?.Dispose();
         }
     }
 }

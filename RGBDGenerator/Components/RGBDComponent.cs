@@ -47,7 +47,7 @@ namespace RGBDGenerator.Components
         // The asset handler that loads and processes actual images and frames
         private RGBDAssetHandler assetHandler;
 
-        private float depthCutoffFS = 1f;
+        private float depthCutoffFS = 0.05f;
 
 
         /// <summary>
@@ -292,12 +292,12 @@ namespace RGBDGenerator.Components
             // Similarly for the fragment cutoff
             if (keyboardState.IsKeyDown(Keys.Home))
             {
-                depthCutoffFS += deltaTime * 0.02f;
+                depthCutoffFS += deltaTime * 0.01f;
                 RGBDShader.SetUniform("depthCutoffFS", depthCutoffFS);
             }
             if (keyboardState.IsKeyDown(Keys.End))
             {
-                depthCutoffFS -= deltaTime * 0.02f;
+                depthCutoffFS -= deltaTime * 0.01f;
                 RGBDShader.SetUniform("depthCutoffFS", depthCutoffFS);
             }
 
@@ -461,6 +461,8 @@ namespace RGBDGenerator.Components
                     // Composite mode uses the full width
                     float compositeAspect = (float)texture.width / (float)texture.height;
                     mesh.Transform.Scale = new Vector3(compositeAspect * 0.5f, 0.5f, 0.5f);
+                    Program.window.SetOverrideRGBD(texture, compositeAspect);
+                    //Program.window.SetOverrideRGBD(texture, 1024 * 6, 1024 * 6, 8, 6, compositeAspect);
                 }
                 else
                 {
@@ -472,6 +474,7 @@ namespace RGBDGenerator.Components
                     }
                     mesh.Transform.Scale = new Vector3(aspectRatioOverride, 1, 1);
                     Program.window.SetOverrideRGBD(texture, aspectRatioOverride);
+                    //Program.window.SetOverrideRGBD(texture, 1024 * 4, 1024 * 4, 6, 6, aspectRatioOverride);
                 }
             }
         }

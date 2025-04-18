@@ -422,5 +422,80 @@ namespace GPU
             output.SetColorAt(x, y, outColor);
         }
 
+        /// <summary>
+        /// Resizes <paramref name="src"/> into <paramref name="dst"/> using a Lanczos filter.
+        /// Pass <paramref name="lobes"/> = 2 (Lanczos2) or 3 (Lanczos3).
+        /// </summary>
+        public static void ImageLanczosScale(
+            Index1D index,
+            dImage src,
+            dImage dst,
+            float lobes)
+        {
+            int dstW = dst.width;
+            int dstH = dst.height;
+            int total = dstW * dstH;
+            if (index >= total)
+                return;
+
+            // Destination pixel coords
+            int dx = index % dstW;
+            int dy = index / dstW;
+
+            // Normalized [0,1] in dst
+            float u = (dx + 0.5f) / dstW;
+            float v = (dy + 0.5f) / dstH;
+
+            // Map to src space
+            float sx = u * src.width;
+            float sy = v * src.height;
+
+            int cx = (int)XMath.Floor(sx);
+            int cy = (int)XMath.Floor(sy);
+
+            // Lanczos radius = lobes
+            int radius = (int)lobes;
+
+            Vec3 accum = new Vec3(0f, 0f, 0f);
+            float wsum = 0f;
+
+            for (int ky = -radius * 2; ky <= radius * 2; ky++)
+            {
+                float dyf = (cy + 0.5f) - sy - ky;
+                float wy = LanczosWeight(dyf, lobes);
+
+                int syClamp = cy + ky;
+                if (syClamp < 0) syClamp = 0;
+                else if (syClamp >= src.height) syClamp = src.height - 1;
+
+                for (int kx = -radius * 2; kx <= radius * 2; kx++)
+                {
+                    float dxf = (cx + 0.5f) - sx - kx;
+                    float wx = LanczosWeight(dxf, lobes);
+
+                    int sxClamp = cx + kx;
+                    if (sxClamp < 0) sxClamp = 0;
+                    else if (sxClamp >= src.width) sxClamp = src.width - 1;
+
+                    float w = wx * wy;
+                    Vec3 c = src.GetColorAt(sxClamp, syClamp).toVec3();
+
+                    accum += c * w;
+                    wsum += w;
+                }
+            }
+
+            if (wsum < 1e-6f)
+                wsum = 1f;
+
+            Vec3 finalCol = accum / wsum;
+            // clamp [0,255]
+            finalCol.x = XMath.Clamp(finalCol.x, 0f, 255f);
+            finalCol.y = XMath.Clamp(finalCol.y, 0f, 255f);
+            finalCol.z = XMath.Clamp(finalCol.z, 0f, 255f);
+
+            dst.SetColorAt(dx, dy, new RGBA32(finalCol));
+        }
     }
 }
+
