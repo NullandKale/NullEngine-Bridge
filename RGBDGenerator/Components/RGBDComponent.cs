@@ -49,6 +49,7 @@ namespace RGBDGenerator.Components
 
         private float depthCutoffFS = 0.05f;
 
+        private float zoom = 1.0f;
 
         /// <summary>
         /// Constructor. Initializes the depth generator, asset handler, and sets up the custom RGBD shader.
@@ -392,6 +393,16 @@ namespace RGBDGenerator.Components
                 manualAspectRatio = true;
             }
 
+            // Zoom in/out with '+' / '-' keys
+            if (keyboardState.IsKeyDown(Keys.PageUp))
+            {
+                zoom += deltaTime * 1.0f;            // adjust speed as desired
+            }
+            if (keyboardState.IsKeyDown(Keys.PageDown))
+            {
+                zoom = Math.Max(0.1f, zoom - deltaTime * 1.0f);
+            }
+
             // Reset with C
             if (keyboardState.IsKeyPressed(Keys.C))
             {
@@ -461,7 +472,7 @@ namespace RGBDGenerator.Components
                     // Composite mode uses the full width
                     float compositeAspect = (float)texture.width / (float)texture.height;
                     mesh.Transform.Scale = new Vector3(compositeAspect * 0.5f, 0.5f, 0.5f);
-                    Program.window.SetOverrideRGBD(texture, compositeAspect);
+                    Program.window.SetOverrideRGBD(texture, zoom, compositeAspect);
                     //Program.window.SetOverrideRGBD(texture, 1024 * 6, 1024 * 6, 8, 6, compositeAspect);
                 }
                 else
@@ -473,7 +484,7 @@ namespace RGBDGenerator.Components
                         aspectRatioOverride = computedAspectRatio;
                     }
                     mesh.Transform.Scale = new Vector3(aspectRatioOverride, 1, 1);
-                    Program.window.SetOverrideRGBD(texture, aspectRatioOverride);
+                    Program.window.SetOverrideRGBD(texture, zoom, aspectRatioOverride);
                     //Program.window.SetOverrideRGBD(texture, 1024 * 4, 1024 * 4, 6, 6, aspectRatioOverride);
                 }
             }

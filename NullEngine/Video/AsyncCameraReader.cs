@@ -50,7 +50,7 @@ namespace NullEngine.Video
             CameraIndex = cameraIndex;
 
             // Open the camera device.
-            capture = new VideoCapture(cameraIndex, VideoCaptureAPIs.DSHOW);
+            capture = new VideoCapture(cameraIndex);
             if (!capture.IsOpened())
                 throw new ArgumentException($"Could not open camera with index: {cameraIndex}");
 
@@ -162,7 +162,7 @@ namespace NullEngine.Video
 
                         if (useRGBA)
                         {
-                            Cv2.CvtColor(temp, targetMat, ColorConversionCodes.BGR2RGBA);
+                            Cv2.CvtColor(temp, targetMat, ColorConversionCodes.BGR2BGRA);
                         }
                         else
                         {

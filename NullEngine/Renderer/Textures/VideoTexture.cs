@@ -6,14 +6,14 @@ namespace NullEngine.Renderer.Textures
 {
     public class VideoTexture : Texture
     {
-        private AsyncVideoReader videoReader;
+        private AsyncFfmpegVideoReader videoReader;
         private double timeSinceLastFrame;
         private double frameInterval;
 
         public VideoTexture(string name, string videoFilePath, bool generateMipmaps = true)
             : base(name, GL.GenTexture())
         {
-            videoReader = new AsyncVideoReader(videoFilePath);
+            videoReader = new AsyncFfmpegVideoReader(videoFilePath);
             frameInterval = 1.0 / videoReader.Fps;
 
             // Set default texture parameters
@@ -70,3 +70,4 @@ namespace NullEngine.Renderer.Textures
         }
     }
 }
+// a woman

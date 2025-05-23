@@ -25,6 +25,7 @@ namespace NullEngine
         public int quiltWidth;
         public int quiltHeight;
         public float quiltAspect;
+        public float quiltZoom;
     }
 
     public class OverrideQuilt
@@ -34,6 +35,7 @@ namespace NullEngine
         public int quiltRows;
         public int quiltCols;
         public float quiltAspect;
+        public float quiltZoom;
     }
 
     public class MainWindow : GameWindow
@@ -92,6 +94,14 @@ namespace NullEngine
             {
                 Log.Debug("Failed to initialize bridge. Bridge may be missing, or the version may be too old");
             }
+
+
+            //if (!Controller.InitializeWithPath("BridgeSDKSampleNative", "runtimes\\win\\lib\\net8.0"))
+            //{
+            //    Log.Debug("Failed to initialize bridge. Bridge may be missing, or the version may be too old");
+            //}
+
+
 
             //if (!Controller.Initialize("BridgeSDKSampleNative"))
             //{
@@ -265,7 +275,7 @@ namespace NullEngine
                         bridgeData.DisplayAspect,       // aspect ratio for the final display
                         activeScene.Focus * 0.05f,
                         activeScene.Offset,
-                        1.0f, 2                            // zoom, depth position
+                        overrideRGBD.quiltZoom, 2                            // zoom, depth position
                     );
                 }
                 else if (overrideQuilt != null && overrideQuilt.texture != null)
@@ -285,7 +295,7 @@ namespace NullEngine
                         (uint)overrideQuilt.quiltCols,
                         (uint)overrideQuilt.quiltRows,
                         overrideQuilt.quiltAspect,
-                        1.0f
+                        overrideQuilt.quiltZoom
                     );
                 }
                 else
@@ -344,9 +354,9 @@ namespace NullEngine
         //  Override setup methods
         // -------------------------------------------------------------------
 
-        public void SetOverrideRGBD(Texture texture, float override_aspect = -1f)
+        public void SetOverrideRGBD(Texture texture, float zoom = 1, float override_aspect = -1f)
         {
-            if (bridgeData == null)
+            if (bridgeData == null || texture == null)
             {
                 return;
             }
@@ -359,6 +369,7 @@ namespace NullEngine
                 quiltRows = bridgeData.Vy,
                 quiltCols = bridgeData.Vx,
                 quiltAspect = override_aspect <= 0 ? texture.width / (float)texture.height : override_aspect,
+                quiltZoom = zoom
             };
             // Clear out any quilt override so we don’t conflict
             overrideQuilt = null;
@@ -369,7 +380,7 @@ namespace NullEngine
         /// (Calls DrawInteropRGBDTextureGL.)
         /// </summary>
         public void SetOverrideRGBD(Texture texture, int quiltWidth, int quiltHeight,
-                                     int quiltRows, int quiltCols, float aspect)
+                                     int quiltRows, int quiltCols, float aspect, float zoom = 1)
         {
             overrideRGBD = new OverrideRGBD
             {
@@ -378,7 +389,8 @@ namespace NullEngine
                 quiltHeight = quiltHeight,
                 quiltRows = quiltRows,
                 quiltCols = quiltCols,
-                quiltAspect = aspect
+                quiltAspect = aspect,
+                quiltZoom = zoom
             };
             // Clear out any quilt override so we don’t conflict
             overrideQuilt = null;
@@ -388,14 +400,15 @@ namespace NullEngine
         /// Override the standard quilt with a custom quilt layout and texture.
         /// (Calls DrawInteropQuiltTextureGL.)
         /// </summary>
-        public void SetOverrideQuilt(Texture texture, int quiltRows, int quiltCols, float aspect)
+        public void SetOverrideQuilt(Texture texture, int quiltRows, int quiltCols, float aspect, float zoom = 1)
         {
             overrideQuilt = new OverrideQuilt
             {
                 texture = texture,
                 quiltRows = quiltRows,
                 quiltCols = quiltCols,
-                quiltAspect = aspect
+                quiltAspect = aspect,
+                quiltZoom = zoom,
             };
             // Clear out the RGBD override so we don’t conflict
             overrideRGBD = null;

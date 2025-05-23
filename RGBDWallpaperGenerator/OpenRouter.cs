@@ -167,6 +167,7 @@ namespace RGBDWallpaperGenerator
 
                 var positive = string.IsNullOrWhiteSpace(inner) ? basePrompt : inner.Trim();
                 if (positive.Length > 450) positive = positive[..450];
+                Console.WriteLine($"positive: \"{positive}\"");
 
                 return positive;
             }

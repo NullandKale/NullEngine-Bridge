@@ -29,6 +29,7 @@ namespace NullEngine.Renderer.Scenes
         public float aspect;
         public float nearPlane;
         public float farPlane;
+        public float speed = 0.5f;
 
         public Scene(BridgeWindowData bridgeData, Transform transform, float cameraSize = 1.0f, float focus = 0.0f, float offset = 1.0f)
         {
@@ -131,19 +132,19 @@ namespace NullEngine.Renderer.Scenes
             // Handle keyboard input for Focus and Offset adjustments
             if (keyboardState.IsKeyDown(Keys.Up))
             {
-                Focus += deltaTime;
+                Focus += deltaTime * speed;
             }
             if (keyboardState.IsKeyDown(Keys.Down))
             {
-                Focus -= deltaTime;
+                Focus -= deltaTime * speed;
             }
             if (keyboardState.IsKeyDown(Keys.Left))
             {
-                Offset -= deltaTime;
+                Offset -= deltaTime * speed;
             }
             if (keyboardState.IsKeyDown(Keys.Right))
             {
-                Offset += deltaTime;
+                Offset += deltaTime * speed;
             }
 
             Focus = MathHelper.Clamp(Focus, -10.0f, 10.0f);

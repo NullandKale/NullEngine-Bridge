@@ -52,8 +52,8 @@ namespace RGBDGenerator
 
         // Constants representing different inference resolutions for different input modes.
         private const int imageInferenceSize = 1280;          // Resolution used for static images
-        private const int videoRealTimeInferenceSize = 512;     // Lower resolution for real-time video
-        private const int videoRecordInferenceSize = 720;      // Higher resolution for recording from file inputs
+        private const int videoRealTimeInferenceSize = 720;     // Lower resolution for real-time video
+        private const int videoRecordInferenceSize = 960;      // Higher resolution for recording from file inputs
 
         // Keeps track of the last processed static image file, so we can skip reprocessing if it doesn't change.
         private string lastProcessedFilename;
@@ -72,7 +72,7 @@ namespace RGBDGenerator
             // By default, use the high-res setting for static images.
             int inferenceSize = imageInferenceSize;
             // Initialize the depth generator using a specific ONNX model.
-            depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small_fp16.onnx", null, true);
+            depthGenerator = new DepthGenerator(inferenceSize, "", null, true);
             //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-small.onnx");
             //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-base_fp16.onnx");
             //depthGenerator = new DepthGenerator(inferenceSize, "Assets/depth-anything-v2-large_fp16.onnx");

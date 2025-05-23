@@ -6,12 +6,14 @@ using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using GPU;
 using ILGPU;
+using ILGPU.IR.Values;
 using ILGPU.Runtime;
 using ILGPU.Runtime.CPU;
 using ILGPU.Runtime.Cuda;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using OpenCvSharp;
+using OpenTK.Audio.OpenAL;
 using RGBDGenerator;
 
 namespace LKG_NVIDIA_RAYS.Utils
@@ -83,6 +85,8 @@ namespace LKG_NVIDIA_RAYS.Utils
         private readonly bool _useServerDepth;          // choose between ONNX vs server
         private readonly HttpClient _httpClient;             // shared for all requests
         private readonly string _depthEndpoint;          // e.g. "http://127.0.0.1:5001/depth"
+        private byte[]? _rgbSendBuffer;            // reused for every frame
+        private float[]? _depthRecvBuffer;         // reused for every frame
 
         public DepthGenerator(
                 int size,
@@ -162,94 +166,87 @@ namespace LKG_NVIDIA_RAYS.Utils
         }
 
         /// <summary>
-        /// Sends the input frame as an uncompressed RGBA8 buffer to the
-        /// Flask <code>/depth_raw</code> endpoint and receives a little‑endian
-        /// <c>float32</c> depth map (values ∈ [0,1]).  
-        /// The returned array length is <c>_targetWidth * _targetHeight</c>.
+        /// Sends the frame as raw BGRA8 to the Flask /depth_raw endpoint and gets a
+        /// little-endian float32 depth map back.  
+        /// Returns an array of length <c>_targetWidth × _targetHeight</c>.
         /// </summary>
-        private float[] RequestDepthFromServer(GPUImage inputImage, bool RGBSwapBGR /* unused now */)
+        private float[] RequestDepthFromServer(GPUImage inputImage, bool RGBSwapBGR /* unused */)
         {
-            // ------------------------------------------------------------------
-            // A) pull RGBA8 pixels from GPUImage
-            // ------------------------------------------------------------------
-            int[] rgbaSrc = inputImage.toCPU();            // len = W*H, 32‑bit each
-            int width = inputImage.width;              // must match _targetWidth
-            int height = inputImage.height;             // must match _targetHeight
+            // ---- dimensions ---------------------------------------------------------
+            int width = inputImage.width;
+            int height = inputImage.height;
 
-            // If you insist on fixed inference size, make sure they match here
             if (width != _targetWidth || height != _targetHeight)
                 throw new InvalidOperationException(
                     $"Input dims ({width}×{height}) differ from _targetWidth/_targetHeight " +
                     $"({_targetWidth}×{_targetHeight}). Call UpdateInferenceSize first.");
 
-            // Turn the int[] view into a byte[] without per‑pixel copying
-            int byteCount = rgbaSrc.Length * sizeof(int);
-            byte[] byteBuf = ArrayPool<byte>.Shared.Rent(byteCount);
-            MemoryMarshal.AsBytes(rgbaSrc.AsSpan()).CopyTo(byteBuf);
+            // ---- pack BGRA8 ---------------------------------------------------------
+            int byteCount = width * height * 4;
+            if (_rgbSendBuffer == null || _rgbSendBuffer.Length < byteCount)
+                _rgbSendBuffer = new byte[byteCount];
 
-            // ------------------------------------------------------------------
-            // B) build multipart/form‑data
-            // ------------------------------------------------------------------
-            using var form = new MultipartFormDataContent
-    {
-        { new StringContent(width.ToString()),  "width"  },
-        { new StringContent(height.ToString()), "height" }
-    };
+            int[] srcInts = inputImage.toCPU();                     // BGRA ints
+            Buffer.BlockCopy(srcInts, 0, _rgbSendBuffer, 0, byteCount);
 
-            var rawContent = new ByteArrayContent(byteBuf, 0, byteCount);
-            rawContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-            form.Add(rawContent, "data", "frame.raw");
-
-            // ------------------------------------------------------------------
-            // C) POST and receive depth buffer
-            // ------------------------------------------------------------------
-            using HttpResponseMessage resp = _httpClient.PostAsync(_depthEndpoint, form).Result;
+            // ---- HTTP POST ----------------------------------------------------------
+            string uri = $"{_depthEndpoint}?width={width}&height={height}";
+            using var body = new ByteArrayContent(_rgbSendBuffer, 0, byteCount)
+            {
+                Headers = { ContentType = new MediaTypeHeaderValue("application/octet-stream") }
+            };
+            using var req = new HttpRequestMessage(HttpMethod.Post, uri) { Content = body };
+            using HttpResponseMessage resp =
+                _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead)
+                           .GetAwaiter().GetResult();
             resp.EnsureSuccessStatusCode();
+
+            // ---- read depth ---------------------------------------------------------
+            int expectedFloats = width * height;
+            int expectedBytes = expectedFloats * sizeof(float);
+
+            if (_depthRecvBuffer == null || _depthRecvBuffer.Length < expectedFloats)
+                _depthRecvBuffer = new float[expectedFloats];
+
             byte[] depthBytes = resp.Content.ReadAsByteArrayAsync().Result;
-
-            // release pooled buffer
-            ArrayPool<byte>.Shared.Return(byteBuf);
-
-            // ------------------------------------------------------------------
-            // D) convert depth bytes → float[]
-            // ------------------------------------------------------------------
-            int expectedBytes = width * height * sizeof(float);
             if (depthBytes.Length != expectedBytes)
                 throw new InvalidOperationException(
-                    $"Depth buffer size mismatch (got {depthBytes.Length}, expected {expectedBytes}).");
+                    $"Depth buffer size mismatch ({depthBytes.Length} ≠ {expectedBytes}).");
 
-            float[] depthArr = new float[width * height];
-            Buffer.BlockCopy(depthBytes, 0, depthArr, 0, depthBytes.Length);
-            return depthArr;
+            Buffer.BlockCopy(depthBytes, 0, _depthRecvBuffer, 0, expectedBytes);
+            return _depthRecvBuffer;
         }
 
-        // ...
-        // Possibly a method to let user reinit the autoFocus if needed
-        // ...
-
+        // -----------------------------------------------------------------------------
+        // UpdateInferenceSize – clears *all* size-dependent buffers, including the new
+        // reusable send/recv arrays so they’ll be rebuilt on the next frame
+        // -----------------------------------------------------------------------------
         public void UpdateInferenceSize(int size)
         {
-            int adjustedSize = (int)Math.Floor(size / 14.0) * 14;
-            if (adjustedSize < 14)
-                adjustedSize = 14;
+            int adjusted = (int)Math.Floor(size / 14.0) * 14;
+            if (adjusted < 14) adjusted = 14;
 
-            if (_targetWidth == adjustedSize && _targetHeight == adjustedSize)
+            if (_targetWidth == adjusted && _targetHeight == adjusted)
                 return;
 
-            inputFloatBuffer?.Dispose();
-            inputFloatBuffer = null;
-            depthFloatBuffer?.Dispose();
-            depthFloatBuffer = null;
-            rollingWindow?.Dispose();
-            rollingWindow = null;
+            // GPU-side resources
+            inputFloatBuffer?.Dispose(); inputFloatBuffer = null;
+            depthFloatBuffer?.Dispose(); depthFloatBuffer = null;
+            rollingWindow?.Dispose(); rollingWindow = null;
 
-            _targetWidth = adjustedSize;
-            _targetHeight = adjustedSize;
+            // host-side model I/O
+            _targetWidth = adjusted;
+            _targetHeight = adjusted;
 
-            int floatCount = 3 * _targetHeight * _targetWidth;
+            int floatCount = 3 * _targetWidth * _targetHeight;
             inputFloatData = new float[floatCount];
-            inputTensor = new DenseTensor<float>(inputFloatData, new[] { 1, 3, _targetHeight, _targetWidth });
+            inputTensor = new DenseTensor<float>(inputFloatData,
+                                                    new[] { 1, 3, _targetHeight, _targetWidth });
             depthFloats = new float[_targetHeight * _targetWidth];
+
+            // new: force re-allocation of HTTP buffers on next call
+            _rgbSendBuffer = null;
+            _depthRecvBuffer = null;
         }
 
         /// <summary>

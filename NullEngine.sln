@@ -23,7 +23,9 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "BridgeRGBDRenderer", "Bridg
 		{5C303F45-FBE5-474E-B666-140313098464} = {5C303F45-FBE5-474E-B666-140313098464}
 	EndProjectSection
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RGBDWallpaperGenerator", "RGBDWallpaperGenerator\RGBDWallpaperGenerator.csproj", "{04BD330B-D8DB-4678-A867-00EB3A699F67}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "RGBDWallpaperGenerator", "RGBDWallpaperGenerator\RGBDWallpaperGenerator.csproj", "{04BD330B-D8DB-4678-A867-00EB3A699F67}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Holostream", "Holostream\Holostream.csproj", "{D1AD7768-B38C-4AD0-B1D9-8DEEE9744E99}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -89,6 +91,14 @@ Global
 		{04BD330B-D8DB-4678-A867-00EB3A699F67}.Release|Any CPU.Build.0 = Release|Any CPU
 		{04BD330B-D8DB-4678-A867-00EB3A699F67}.Release|x64.ActiveCfg = Release|Any CPU
 		{04BD330B-D8DB-4678-A867-00EB3A699F67}.Release|x64.Build.0 = Release|Any CPU
+		{D1AD7768-B38C-4AD0-B1D9-8DEEE9744E99}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D1AD7768-B38C-4AD0-B1D9-8DEEE9744E99}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D1AD7768-B38C-4AD0-B1D9-8DEEE9744E99}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D1AD7768-B38C-4AD0-B1D9-8DEEE9744E99}.Debug|x64.Build.0 = Debug|Any CPU
+		{D1AD7768-B38C-4AD0-B1D9-8DEEE9744E99}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D1AD7768-B38C-4AD0-B1D9-8DEEE9744E99}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D1AD7768-B38C-4AD0-B1D9-8DEEE9744E99}.Release|x64.ActiveCfg = Release|Any CPU
+		{D1AD7768-B38C-4AD0-B1D9-8DEEE9744E99}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
