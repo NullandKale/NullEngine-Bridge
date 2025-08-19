@@ -99,7 +99,7 @@ namespace Holostream.Components
                 if (videoReader != null)
                 {
                     videoReader?.Dispose();
-                    videoReader = nu
+                    videoReader = null;
                 }
 
                 if (cameraReader == null)

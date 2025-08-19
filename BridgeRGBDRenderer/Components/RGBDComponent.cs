@@ -171,7 +171,7 @@ namespace BridgeRGBDRenderer.Components
 
             // Attach our shader and texture to the mesh, so the render pipeline uses them
             mesh.Texture = texture;
-            mesh.shader = RGBDShader;
+            //mesh.shader = RGBDShader;
 
             // Calculate aspect ratio of the COLOR portion (left half of image)
             float aspectRatio = (texture.width / 2f) / texture.height;

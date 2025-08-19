@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "BridgeRGBDRenderer": {
+      "commandName": "Project",
+      "nativeDebugging": true
+    }
+  }
+}
