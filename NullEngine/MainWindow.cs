@@ -91,20 +91,20 @@ namespace NullEngine
             ShaderManager.LoadShaders();
             MeshManager.LoadMeshes();
 
-            if (!Controller.InitializeWithPath("BridgeSDKSampleNative", "C:\\Users\\alec\\source\\repos\\LookingGlassBridge\\out\\build\\x64-Release"))
-            {
-                Log.Debug("Failed to initialize bridge. Bridge may be missing, or the version may be too old");
-            }
+            //if (!Controller.InitializeWithPath("BridgeSDKSampleNative", "C:\\Users\\alec\\source\\repos\\LookingGlassBridge\\out\\build\\x64-Release"))
+            //{
+            //    Log.Debug("Failed to initialize bridge. Bridge may be missing, or the version may be too old");
+            //}
 
             //if (!Controller.InitializeWithPath("BridgeSDKSampleNative", "runtimes\\win\\lib\\net8.0"))
             //{
             //    Log.Debug("Failed to initialize bridge. Bridge may be missing, or the version may be too old");
             //}
 
-            //if (!Controller.Initialize("BridgeSDKSampleNative"))
-            //{
-            //    Log.Debug("Failed to initialize bridge. Bridge may be missing, or the version may be too old");
-            //}
+            if (!Controller.Initialize("BridgeSDKSampleNative"))
+            {
+                Log.Debug("Failed to initialize bridge. Bridge may be missing, or the version may be too old");
+            }
 
             List<DisplayInfo> displays = Controller.GetDisplayInfoList();
 
